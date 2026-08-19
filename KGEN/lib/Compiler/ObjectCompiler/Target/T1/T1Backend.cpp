@@ -36,6 +36,8 @@ namespace M::KGEN {
 /// reset, so that address belongs to the runtime's launch trampoline; kernels
 /// are linked one MiB up. The runtime places PT_LOAD segments at their p_paddr
 /// inside the window and resolves the kernel entry from the ELF symbol table.
+#include "t1_builtins.inc"
+
 static constexpr const char *t1TextBase = "0x80100000";
 
 const TargetTraits *T1Backend::traits() const { return &T1Traits::get(); }
@@ -99,7 +101,21 @@ ErrorOr<BufferRef> T1Backend::emitObject(llvm::Module &module,
     return Error("failed to resolve a temp directory for the T1 link");
   elfPath /= objFileOr->getPath().stem().string() + ".elf";
 
-  std::string textBaseArg = std::string("-Ttext=") + t1TextBase;
+  // Freestanding mem* the code generator may synthesize calls to
+  // (-nostdlib provides nothing else).
+  ErrorOr<TempFile> builtinsFileOr = writeTempFile(
+      "t1-builtins-%%%%%%.o",
+      StringRef(reinterpret_cast<const char *>(t1BuiltinsObj),
+                sizeof(t1BuiltinsObj)));
+  if (builtinsFileOr.isError())
+    return Error("failed to write the T1 builtins object to a file");
+  std::string builtinsPath = builtinsFileOr->getPath().string();
+
+  // --image-base (not -Ttext): every section, including .rodata/.data for
+  // kernel constants, must land inside the device window -- the runtime
+  // drops PT_LOADs below the SRAM base when composing the launch image.
+  // The entry is resolved from the symtab by libT1RT, so e_entry is unused.
+  std::string imageBaseArg = std::string("--image-base=") + t1TextBase;
   std::string entryArg = std::string("--entry=") + t1TextBase;
 
   // -n (nmagic): no page-aligned segments and no ELF-header PT_LOAD -- the
@@ -107,8 +123,8 @@ ErrorOr<BufferRef> T1Backend::emitObject(llvm::Module &module,
   // addresses outside the device window.
   SmallVector<StringRef> lldArgs = {
       ctx.linkerPath, "-flavor",   "gnu",       "-m", "elf32lriscv",
-      "-static",      "-nostdlib", "-n",        textBaseArg, entryArg,
-      objFilePath,    "-o",        elfPath.c_str(),
+      "-static",      "-nostdlib", "-n",        imageBaseArg, entryArg,
+      objFilePath,    builtinsPath, "-o",       elfPath.c_str(),
   };
 
   std::string errorMsg;

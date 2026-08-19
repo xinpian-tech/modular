@@ -40,3 +40,43 @@ mojo build --target-accelerator=t1 ../examples/saxpy.mojo -o saxpy
 ```
 
 `execution_time` returns **simulation cycles** on T1, not nanoseconds.
+
+## Fast readback (memory dump)
+
+The default readback path streams every result word over the PERF MMIO
+(~15 cycles per word — fine for a SAXPY, ruinous for LLM-sized outputs).
+With a simulator carrying `emulator-memdump.patch` (adds
+`+t1_memory_dump_path=`/`+t1_memory_dump_range=`, ~30 lines in the
+`dpi_t1rocketemu` Rust library; the verilated RTL is unchanged), set:
+
+```sh
+export T1RT_MEMDUMP=1            # readback from the exit-time memory dump
+export T1RT_DUMP_MAX_BYTES=...   # buffers above this are not read back
+```
+
+The runtime then keeps the PERF stream down to the BEGIN/END cycle markers
+and refreshes buffer shadows from the dump file at zero simulation-cycle
+cost. `T1RT_DUMP_MAX_BYTES` selects which buffers are refreshed — set it
+above the size of every buffer a kernel writes (streamed read-only weight
+buffers can stay above it; see `../examples/t1llama.mojo`, which allocates
+them first so the refreshed buffers form one compact range).
+
+## Functional simulation (pokedex)
+
+`emulator-memdump.patch` also teaches the T1 repository's `pokedex` ISA
+simulator a batch mode (`pokedex run --machine t1emu` + the same memory
+dump and PERF-event options).  It models the same address map, HTIF exit
+and PERF protocol as `t1rocketemu`, so libT1RT drives it unmodified:
+
+```sh
+export T1RT_EMULATOR=/path/to/bin/pokedex
+export T1RT_EMULATOR_KIND=pokedex     # switches the invocation style
+export T1RT_MEMDUMP=1
+```
+
+pokedex retires ~1-3M instructions/s versus ~10-20k cycles/s for the
+verilated RTL — use it for model-scale workloads and the RTL simulator
+for cycle-accurate spot checks of the same kernels (the composed images
+are identical; both must produce identical results).  In pokedex mode
+`execution_time` reports retired instructions (a 1-IPC approximation),
+not RTL cycles.

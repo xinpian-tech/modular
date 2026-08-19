@@ -23,10 +23,19 @@
  * count back from the PERF MMIO event stream (mmio-event.jsonl).
  *
  * Environment:
- *   T1RT_EMULATOR    path to the t1rocketemu simulator binary   (required)
- *   T1RT_TRAMPOLINE  path to trampoline.bin (flat, at SRAM base) (required)
- *   T1RT_WORKDIR     scratch directory (default: mkdtemp under $TMPDIR)
- *   T1RT_VERBOSE     1 => log launches to stderr
+ *   T1RT_EMULATOR       path to the simulator binary             (required)
+ *   T1RT_TRAMPOLINE     path to trampoline.bin (flat, SRAM base) (required)
+ *   T1RT_WORKDIR        scratch directory (default: mkdtemp under $TMPDIR)
+ *   T1RT_VERBOSE        1 => log launches and cycle counts to stderr
+ *   T1RT_MEMDUMP        1 => read results back from the simulator's
+ *                       exit-time memory dump (needs emulator-memdump.patch)
+ *                       instead of streaming them over the PERF MMIO
+ *   T1RT_DUMP_MAX_BYTES buffers larger than this are loaded but never read
+ *                       back (streamed read-only weights)
+ *   T1RT_EMULATOR_KIND  "pokedex" => drive the pokedex ISA model's batch
+ *                       mode instead of the verilated RTL (same protocol;
+ *                       timestamps are retired instructions, not cycles)
+ *   T1RT_POKEDEX_VLEN   VLEN passed to pokedex (default 2048)
  *
  * grid_dim/block_dim other than (1,1,1)/(1,1,1) are REJECTED by design:
  * silently running one copy of a kernel written for N would produce wrong
@@ -97,6 +106,9 @@ typedef struct T1Context {
   T1Launch *pending, *pending_tail;
   uint64_t total_cycles;  /* accumulated kernel cycles over all runs */
   uint64_t last_cycles;   /* kernel cycles of the most recent run */
+  uint64_t dump_max;      /* buffers larger than this are not dumped back */
+  int memdump;            /* readback via simulator memory dump, not PERF */
+  int pokedex;            /* emulator is pokedex (ISA model), not the RTL sim */
   char *workdir;
   const char *emulator;
   const char *trampoline_path;
@@ -232,25 +244,49 @@ static const char *write_image(const char *path, const Segment *segs,
 
 /*--- the batch run -------------------------------------------------------*/
 
-static const char *run_emulator(T1Context *ctx, const char *image) {
-  char event_path[4096], rtl_path[4096];
+static const char *run_emulator(T1Context *ctx, const char *image,
+                                uint32_t dump_lo, uint32_t dump_hi) {
+  char event_path[4096], rtl_path[4096], memdump_path[4096];
   snprintf(event_path, sizeof event_path, "%s/mmio-event.jsonl", ctx->workdir);
   snprintf(rtl_path, sizeof rtl_path, "%s/rtl-event.jsonl", ctx->workdir);
+  snprintf(memdump_path, sizeof memdump_path, "%s/memdump.bin", ctx->workdir);
   unlink(event_path);
+  unlink(memdump_path);
 
   pid_t pid = fork();
   T1_TRY(pid >= 0, "T1RT: fork failed");
   if (pid == 0) {
     if (chdir(ctx->workdir) != 0)
       _exit(126);
-    char elf_arg[4200], rtl_arg[4200];
+    char elf_arg[4200], rtl_arg[4200], md_arg[4200], mr_arg[128];
     snprintf(elf_arg, sizeof elf_arg, "+t1_elf_file=%s", image);
     snprintf(rtl_arg, sizeof rtl_arg, "+t1_dev_rtl_event_path=%s", rtl_path);
     if (!ctx->verbose) {
       freopen("/dev/null", "w", stdout);
       freopen("emulator.log", "w", stderr);
     }
-    execl(ctx->emulator, ctx->emulator, elf_arg, rtl_arg, (char *)NULL);
+    if (ctx->pokedex) {
+      char range_arg[64];
+      snprintf(range_arg, sizeof range_arg, "0x%x:0x%x", dump_lo, dump_hi);
+      const char *vlen = getenv("T1RT_POKEDEX_VLEN");
+      if (ctx->memdump && dump_hi > dump_lo)
+        execl(ctx->emulator, ctx->emulator, "run", image, "--machine", "t1emu",
+              "--vlen", vlen ? vlen : "2048", "--perf-event-path", event_path,
+              "--memory-dump-path", memdump_path, "--memory-dump-range",
+              range_arg, (char *)NULL);
+      else
+        execl(ctx->emulator, ctx->emulator, "run", image, "--machine", "t1emu",
+              "--vlen", vlen ? vlen : "2048", "--perf-event-path", event_path,
+              (char *)NULL);
+    } else if (ctx->memdump && dump_hi > dump_lo) {
+      snprintf(md_arg, sizeof md_arg, "+t1_memory_dump_path=%s", memdump_path);
+      snprintf(mr_arg, sizeof mr_arg, "+t1_memory_dump_range=0x%x:0x%x",
+               dump_lo, dump_hi);
+      execl(ctx->emulator, ctx->emulator, elf_arg, rtl_arg, md_arg, mr_arg,
+            (char *)NULL);
+    } else {
+      execl(ctx->emulator, ctx->emulator, elf_arg, rtl_arg, (char *)NULL);
+    }
     _exit(127);
   }
   int status = 0;
@@ -362,11 +398,24 @@ static const char *flush_launches(T1Context *ctx) {
     if (!ctx->pending)
       ctx->pending_tail = NULL;
 
-    /* Argblock: header, 8 slots, dump descriptors (all device buffers). */
-    uint32_t ndump = 0;
+    /* Argblock: header, 8 slots, dump descriptors (device buffers up to
+     * dump_max bytes; larger ones are loaded but not read back).  In memdump
+     * mode nothing is streamed over PERF; the same buffer set is instead
+     * refreshed from the simulator's exit-time memory dump. */
+    uint32_t ndump = 0, nbufsegs = 0;
+    uint32_t dump_lo = UINT32_MAX, dump_hi = 0;
     for (T1Buffer *b = ctx->buffers; b; b = b->next)
-      if (b->device_resident && !b->parent)
-        ndump++;
+      if (b->device_resident && !b->parent) {
+        nbufsegs++;
+        if (b->bytes <= ctx->dump_max) {
+          if (b->device_addr < dump_lo)
+            dump_lo = b->device_addr;
+          if (b->device_addr + (uint32_t)b->bytes > dump_hi)
+            dump_hi = b->device_addr + (uint32_t)b->bytes;
+          if (!ctx->memdump)
+            ndump++;
+        }
+      }
     size_t argblock_words = 4 + 2 * T1_ARGBLOCK_MAX_ARGS + 2 * ndump;
     uint32_t *argblock = calloc(argblock_words, 4);
     argblock[0] = launch->func->entry;
@@ -377,16 +426,17 @@ static const char *flush_launches(T1Context *ctx) {
       argblock[4 + 2 * a + 1] = (uint32_t)(launch->arg_slots[a] >> 32);
     }
     uint32_t d = 0;
-    for (T1Buffer *b = ctx->buffers; b; b = b->next)
-      if (b->device_resident && !b->parent) {
-        argblock[4 + 2 * T1_ARGBLOCK_MAX_ARGS + 2 * d] = b->device_addr;
-        argblock[4 + 2 * T1_ARGBLOCK_MAX_ARGS + 2 * d + 1] =
-            (uint32_t)((b->bytes + 3) & ~3u);
-        d++;
-      }
+    if (!ctx->memdump)
+      for (T1Buffer *b = ctx->buffers; b; b = b->next)
+        if (b->device_resident && !b->parent && b->bytes <= ctx->dump_max) {
+          argblock[4 + 2 * T1_ARGBLOCK_MAX_ARGS + 2 * d] = b->device_addr;
+          argblock[4 + 2 * T1_ARGBLOCK_MAX_ARGS + 2 * d + 1] =
+              (uint32_t)((b->bytes + 3) & ~3u);
+          d++;
+        }
 
     /* Segments: trampoline, argblock, kernel PT_LOADs, device buffers. */
-    unsigned nsegs = 2 + ndump;
+    unsigned nsegs = 2 + nbufsegs;
     const Elf32Ehdr *keh = (const Elf32Ehdr *)launch->func->elf;
     const Elf32Phdr *kph = (const Elf32Phdr *)(launch->func->elf + keh->phoff);
     for (unsigned p = 0; p < keh->phnum; p++)
@@ -416,9 +466,28 @@ static const char *flush_launches(T1Context *ctx) {
       fprintf(stderr, "T1RT: launching kernel entry=0x%08x argc=%u ndump=%u\n",
               launch->func->entry, launch->argc, ndump);
     if (!err)
-      err = (char *)run_emulator(ctx, image);
+      err = (char *)run_emulator(ctx, image, dump_lo, dump_hi);
     if (!err)
       err = (char *)parse_events(ctx);
+    if (!err && ctx->memdump && dump_hi > dump_lo) {
+      char memdump_path[4096];
+      snprintf(memdump_path, sizeof memdump_path, "%s/memdump.bin",
+               ctx->workdir);
+      uint8_t *dump = NULL;
+      size_t dump_len = 0;
+      err = (char *)read_file(memdump_path, &dump, &dump_len);
+      if (!err && dump_len != dump_hi - dump_lo)
+        err = (char *)t1_err("T1RT: memory dump has unexpected size");
+      if (!err)
+        for (T1Buffer *b = ctx->buffers; b; b = b->next)
+          if (b->device_resident && !b->parent && b->bytes <= ctx->dump_max)
+            memcpy(b->shadow, dump + (b->device_addr - dump_lo), b->bytes);
+      free(dump);
+    }
+    if (!err && ctx->verbose)
+      fprintf(stderr, "T1RT: kernel done: %llu cycles (total %llu)\n",
+              (unsigned long long)ctx->last_cycles,
+              (unsigned long long)ctx->total_cycles);
 
     free(segs);
     free(argblock);
@@ -444,6 +513,26 @@ const char *AsyncRT_DeviceContext_create(const T1Context **result,
     ctx->trampoline_path = getenv("T1RT_TRAMPOLINE");
     const char *verbose = getenv("T1RT_VERBOSE");
     ctx->verbose = verbose && verbose[0] == '1';
+    /* The PERF dump stream costs one MMIO store per 4 bytes; readback of
+     * large read-only inputs (e.g. streamed weights) would dominate the
+     * simulation.  Buffers above this size are still loaded into the image
+     * but their device contents are not read back — set it above the size
+     * of every buffer a kernel writes. */
+    const char *dump_max = getenv("T1RT_DUMP_MAX_BYTES");
+    ctx->dump_max = dump_max ? strtoull(dump_max, NULL, 0) : UINT64_MAX;
+    /* With a simulator that supports +t1_memory_dump_path (see
+     * T1/runtime/emulator-memdump.patch), results are read back from a file
+     * written at exit instead of being streamed one word at a time over the
+     * PERF MMIO: zero simulation-cycle cost.  The dump_max threshold then
+     * selects which buffers are refreshed from the dump. */
+    const char *memdump = getenv("T1RT_MEMDUMP");
+    ctx->memdump = memdump && memdump[0] == '1';
+    /* T1RT_EMULATOR_KIND=pokedex switches the invocation to the pokedex ISA
+     * model's batch mode (--machine t1emu): same address map, HTIF and PERF
+     * protocol, ~1000x faster than the verilated RTL, but timestamps are a
+     * retired-instruction count (1-IPC approximation), not RTL cycles. */
+    const char *kind = getenv("T1RT_EMULATOR_KIND");
+    ctx->pokedex = kind && strcmp(kind, "pokedex") == 0;
     if (!ctx->emulator || !ctx->trampoline_path) {
       free(ctx);
       return t1_err("T1RT: set T1RT_EMULATOR and T1RT_TRAMPOLINE");
@@ -608,6 +697,11 @@ const char *AsyncRT_DeviceBuffer_createSubBuffer(const T1Buffer **result,
 const char *AsyncRT_DeviceContext_HtoD_async(const T1Context *ctx,
                                              const T1Buffer *dst,
                                              const void *src) {
+  /* Stream order: pending launches must observe the buffer's previous
+   * contents, so drain them before mutating the shadow. */
+  const char *err = flush_launches((T1Context *)ctx);
+  if (err)
+    return err;
   memcpy(dst->shadow, src, dst->bytes);
   return T1_OK;
 }
@@ -624,6 +718,9 @@ const char *AsyncRT_DeviceContext_DtoH_async(const T1Context *ctx, void *dst,
 const char *AsyncRT_DeviceContext_DtoD_async(const T1Context *ctx,
                                              const T1Buffer *dst,
                                              const T1Buffer *src) {
+  const char *err = flush_launches((T1Context *)ctx);
+  if (err)
+    return err;
   memcpy(dst->shadow, src->shadow,
          dst->bytes < src->bytes ? dst->bytes : src->bytes);
   return T1_OK;
@@ -633,6 +730,9 @@ const char *AsyncRT_DeviceContext_setMemory_async(const T1Context *ctx,
                                                   const T1Buffer *dst,
                                                   uint64_t val,
                                                   size_t val_size) {
+  const char *err = flush_launches((T1Context *)ctx);
+  if (err)
+    return err;
   for (size_t i = 0; i + val_size <= dst->bytes; i += val_size)
     memcpy(dst->shadow + i, &val, val_size);
   return T1_OK;
