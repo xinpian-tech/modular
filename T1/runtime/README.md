@@ -80,3 +80,12 @@ for cycle-accurate spot checks of the same kernels (the composed images
 are identical; both must produce identical results).  In pokedex mode
 `execution_time` reports retired instructions (a 1-IPC approximation),
 not RTL cycles.
+
+## Instruction-mix auditing
+
+With the patched pokedex, `T1RT_PC_HISTOGRAM=<prefix>` writes one
+`(pc, count, word)` CSV per launch.  `T1/tools/analyze-rvv-mix.py` merges
+them, classifies every executed instruction from its encoding (RVV vs
+scalar classes), and attributes scalar hotspots to kernel functions via
+`llvm-objdump` — the tool behind the t1llama kernel iteration
+(47.8% → 71.5% dynamic RVV share; 99.8% of element operations vector).

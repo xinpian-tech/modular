@@ -191,10 +191,10 @@ index 6c61133..780e617 100644
          } else {
              Err(BusError::DeviceError { id: "PerfWrite" })
 diff --git a/pokedex/simulator/src/main.rs b/pokedex/simulator/src/main.rs
-index ae54ac7..6f43c29 100644
+index ae54ac7..05f50f7 100644
 --- a/pokedex/simulator/src/main.rs
 +++ b/pokedex/simulator/src/main.rs
-@@ -57,6 +57,22 @@ struct RunArgs {
+@@ -57,6 +57,26 @@ struct RunArgs {
      /// Path to the RISC-V ELF to execute
      elf: PathBuf,
  
@@ -214,10 +214,14 @@ index ae54ac7..6f43c29 100644
 +    #[arg(long)]
 +    perf_event_path: Option<PathBuf>,
 +
++    /// Write an execution histogram (pc, count, first instruction word) CSV
++    #[arg(long)]
++    pc_histogram_path: Option<PathBuf>,
++
      /// Path to the generated trace json log
      #[arg(long, short)]
      output: Option<PathBuf>,
-@@ -105,21 +121,31 @@ fn main() -> anyhow::Result<ExitCode> {
+@@ -105,21 +125,32 @@ fn main() -> anyhow::Result<ExitCode> {
      match &args.command {
          Command::Run(args) => {
              let output = if let Some(output) = &args.output {
@@ -239,6 +243,7 @@ index ae54ac7..6f43c29 100644
 +                memory_dump_path: args.memory_dump_path.clone(),
 +                memory_dump_range: args.memory_dump_range.clone(),
 +                perf_event_path: args.perf_event_path.clone(),
++                pc_histogram_path: args.pc_histogram_path.clone(),
 +            };
 +
              run::cli_command(
@@ -252,10 +257,10 @@ index ae54ac7..6f43c29 100644
          }
          Command::DifftestT1(args) => {
 diff --git a/pokedex/simulator/src/run/mod.rs b/pokedex/simulator/src/run/mod.rs
-index 306d248..30a4f12 100644
+index 306d248..6caba0d 100644
 --- a/pokedex/simulator/src/run/mod.rs
 +++ b/pokedex/simulator/src/run/mod.rs
-@@ -37,12 +37,22 @@ pub enum Output<'a> {
+@@ -37,12 +37,23 @@ pub enum Output<'a> {
      Stdout,
  }
  
@@ -266,6 +271,7 @@ index 306d248..30a4f12 100644
 +    pub memory_dump_path: Option<std::path::PathBuf>,
 +    pub memory_dump_range: Option<String>,
 +    pub perf_event_path: Option<std::path::PathBuf>,
++    pub pc_histogram_path: Option<std::path::PathBuf>,
 +}
 +
  pub fn cli_command(
@@ -279,11 +285,14 @@ index 306d248..30a4f12 100644
  ) -> anyhow::Result<ExitCode> {
      // Safety: dlopen is unsafe intrinsicly
      let modellib = unsafe {
-@@ -53,7 +63,12 @@ pub fn cli_command(
+@@ -53,7 +64,15 @@ pub fn cli_command(
          .create_spike(vlen)
          .map_err(|e| anyhow!("model init failed ({e})"))?;
  
 -    let mut bus = Bus::new_spike();
++    let mut pc_hist: std::collections::HashMap<u32, (u64, u32)> =
++        std::collections::HashMap::new();
++    let want_hist = batch.pc_histogram_path.is_some();
 +    let perf_events: crate::bus::t1emu::PerfEvents = Default::default();
 +    let icount = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 +    let mut bus = match batch.machine.as_str() {
@@ -293,7 +302,7 @@ index 306d248..30a4f12 100644
      let entry = bus.load_elf(elf)?;
      if let Some(expected_elf_entry) = bus.expected_elf_entry() {
          // we check the elf entry is the same as the platform reset vector
-@@ -69,15 +84,12 @@ pub fn cli_command(
+@@ -69,15 +88,12 @@ pub fn cli_command(
          bail!("model bug: reset failed, reset_vector={reset_vector:#010x}");
      }
  
@@ -315,15 +324,23 @@ index 306d248..30a4f12 100644
      };
  
      let mut spike_diff: Option<SpikeDiff<BufReader<File>>> = match diff_spike_log {
-@@ -116,6 +128,7 @@ pub fn cli_command(
+@@ -116,6 +132,15 @@ pub fn cli_command(
              }
          };
  
 +        icount.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++        if want_hist {
++            let word = match inst {
++                Inst::I(bits) => bits,
++                Inst::C(bits) => bits as u32,
++            };
++            let e = pc_hist.entry(pc).or_insert((0, word));
++            e.0 += 1;
++        }
          let step_state = match inst {
              Inst::I(inst) => cpu.execute(pc, inst, &mut bus),
              Inst::C(inst) => cpu.execute_compressed(pc, inst, &mut bus),
-@@ -123,10 +136,10 @@ pub fn cli_command(
+@@ -123,10 +148,10 @@ pub fn cli_command(
          step_state.expect("raise exception");
  
          let trace = cpu.get_trace().expect("get_trace_buffer failed");
@@ -338,11 +355,21 @@ index 306d248..30a4f12 100644
  
          if let Some(spike) = &mut spike_diff {
              let (spike_pc, spike_inst) = spike.step()?;
-@@ -150,6 +163,28 @@ pub fn cli_command(
+@@ -150,6 +175,38 @@ pub fn cli_command(
          }
      };
  
 +    if matches!(reason, ExitReason::Syscon(0)) {
++        if let Some(path) = &batch.pc_histogram_path {
++            use std::io::Write as _;
++            let mut f = BufWriter::new(std::fs::File::create(path)?);
++            let mut entries: Vec<_> = pc_hist.iter().collect();
++            entries.sort();
++            writeln!(f, "pc,count,word")?;
++            for (pc, (count, word)) in entries {
++                writeln!(f, "{pc:#010x},{count},{word:#010x}")?;
++            }
++        }
 +        if let Some(path) = &batch.perf_event_path {
 +            use std::io::Write as _;
 +            let mut f = BufWriter::new(std::fs::File::create(path)?);

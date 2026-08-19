@@ -269,7 +269,18 @@ static const char *run_emulator(T1Context *ctx, const char *image,
       char range_arg[64];
       snprintf(range_arg, sizeof range_arg, "0x%x:0x%x", dump_lo, dump_hi);
       const char *vlen = getenv("T1RT_POKEDEX_VLEN");
-      if (ctx->memdump && dump_hi > dump_lo)
+      /* Accumulating histogram: one CSV per launch, appended sequence. */
+      const char *hist = getenv("T1RT_PC_HISTOGRAM");
+      char hist_path[4300];
+      if (hist)
+        snprintf(hist_path, sizeof hist_path, "%s.%u.csv", hist,
+                 (unsigned)getpid());
+      if (ctx->memdump && dump_hi > dump_lo && hist)
+        execl(ctx->emulator, ctx->emulator, "run", image, "--machine", "t1emu",
+              "--vlen", vlen ? vlen : "2048", "--perf-event-path", event_path,
+              "--memory-dump-path", memdump_path, "--memory-dump-range",
+              range_arg, "--pc-histogram-path", hist_path, (char *)NULL);
+      else if (ctx->memdump && dump_hi > dump_lo)
         execl(ctx->emulator, ctx->emulator, "run", image, "--machine", "t1emu",
               "--vlen", vlen ? vlen : "2048", "--perf-event-path", event_path,
               "--memory-dump-path", memdump_path, "--memory-dump-range",
