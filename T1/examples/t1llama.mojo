@@ -159,6 +159,22 @@ def _mv(w: F32Ptr, x: F32Ptr, n: Int, rows: Int, out_ptr: F32Ptr):
         vsetvli zero, t0, e32, m4, ta, ma
         3:
         vmv.s.x v4, zero
+        li t0, 128
+        vsetvli zero, t0, e32, m2, ta, ma
+        vfadd.vv v8, v8, v10
+        vfadd.vv v12, v12, v14
+        vfadd.vv v16, v16, v18
+        vfadd.vv v20, v20, v22
+        vfadd.vv v24, v24, v26
+        vfadd.vv v28, v28, v30
+        li t0, 64
+        vsetvli zero, t0, e32, m1, ta, ma
+        vfadd.vv v8, v8, v9
+        vfadd.vv v12, v12, v13
+        vfadd.vv v16, v16, v17
+        vfadd.vv v20, v20, v21
+        vfadd.vv v24, v24, v25
+        vfadd.vv v28, v28, v29
         vfredusum.vs v0, v8, v4
         vfredusum.vs v1, v12, v4
         vfredusum.vs v2, v16, v4
@@ -222,6 +238,12 @@ def _mv1(w: F32Ptr, x: F32Ptr, n: Int, out_ptr: F32Ptr):
         li t0, 256
         vsetvli zero, t0, e32, m4, ta, ma
         3:
+        li t0, 128
+        vsetvli zero, t0, e32, m2, ta, ma
+        vfadd.vv v8, v8, v10
+        li t0, 64
+        vsetvli zero, t0, e32, m1, ta, ma
+        vfadd.vv v8, v8, v9
         vfredusum.vs v0, v8, v1
         vfmv.f.s ft0, v0
         fsw ft0, 0($3)

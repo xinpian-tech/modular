@@ -1,0 +1,216 @@
+# T1 microarchitectural performance analysis of the llama kernels
+
+Non-invasive analysis of the hand-written RVV llama kernels
+(`T1/examples/t1llama.mojo`) on the cycle-accurate `t1rocketemu` RTL
+simulation of the **blastoise** design.  All data comes from the
+simulator's per-instruction retirement trace (`rtl-event.jsonl`:
+`T1Issue`/`T1Retire`/`T1Release` events with cycle timestamps for every
+vector instruction, plus scalar retires) — no instrumentation
+instructions were inserted into the kernels.
+
+Workload: stories15M (dim 288, hidden 768), one transformer layer
+launch (2,976 matvec rows) and the classifier head launch
+(32,000 × 288).  The same kernels run TinyLlama-1.1B; only `n` and the
+row counts change.
+
+## 1. The machine (blastoise)
+
+From `t1zaozi/params/blastoise/*.json`:
+
+| Parameter | Value | Consequence |
+|---|---|---|
+| VLEN | 2048 | m1 = 64 f32 lanes-worth of state |
+| Lanes × datapath | 4 × 64 bit | DLEN = 256 bit = 8 f32/cycle execute |
+| `chainingSize` | 4 | at most 4 vector instructions in flight per lane |
+| VRF | banked SRAM, `p0rw` (single port), `portFactor` 4, read latency 2 | loads writing the VRF contend with VFU reads |
+| LSU | 3 MSHRs/bank, AXI 256-bit data, `toVRFWriteQueueSize` 96 | 32 B/cycle peak memory bandwidth, deep outstanding |
+| Scalar core | Rocket (in-order), decoupled vector issue queue | scalar instructions run under vector execution |
+
+## 2. Headline results (RTL, cycle-accurate)
+
+| Kernel version | layer kernel | head kernel |
+|---|---|---|
+| v1 generic Mojo SIMD | 3,343,155 | — |
+| v2 first asm (m4, vfredusum, no tails) | 1,465,269 | 15,081,105 |
+| v5 row-loop-in-asm, 6-row groups, packed stores | 1,088,598 | 11,147,993 |
+| v6 two-level `vfadd` fold before short reduce | **824,567** | **8,310,745** |
+
+Total: **4.05×** (layer) / **1.81×** (head, v2 baseline) over the
+generic-SIMD kernels, entirely from
+restructuring against measured microarchitectural behavior.  Cycle
+counts are bit-identical across layers and across runs — the RTL is
+deterministic, which makes every one of these numbers exactly
+reproducible.
+
+## 3. Chaining works — and hides all scalar overhead
+
+From the v5 layer-launch trace (20,550 vector instructions):
+
+- Unit-stride `vle32` (m4, vl=256) issue back-to-back: the issue-to-issue
+  gap median is **1 cycle**; up to 5 vector instructions are
+  simultaneously in flight, and ≥2 are in flight during **98.5%** of
+  kernel cycles.
+- The dependent `vfmul`/`vfmacc` issues ~33 cycles after the `vle32`
+  producing its operand and executes while the load is still streaming
+  beats — Load→Exec chaining exactly as advertised by the Cray-style
+  design.
+- **96.6% (layer) / 100.0% (head) of scalar retires happen while vector
+  instructions are in flight.**  The address increments, pointer chains
+  and loop control that dominate the scalar instruction count (§ audit
+  in the previous commit) cost **zero cycles**: Rocket runs them in the
+  shadow of vector execution.
+
+The last point corrects the natural reading of the instruction-mix
+metric: pushing dynamic RVV share from 47.8% to 71.5% mattered because
+it *removed serialized work* (scalar tails, reduction trees, a
+byte-wise memset), not because scalar instructions were expensive — the
+surviving ones are already free.
+
+## 4. Anatomy of one 6-row matvec group (v5, n=288)
+
+Timeline reconstructed from issue/retire events (one group, 2,090
+cycles):
+
+```
+phase        cycles   what the trace shows
+loads+MACs   0-585    7 x vle32 pairs cadence ~66 cy; vfmul chained ~33 cy
+                      behind each load; 2 loads overlapped throughout
+reduce      585-1947  6 x vfredusum (vl=256): occupancy 446 cy each,
+                      accepted every ~224 cy -> phase 1,362 cy
+pack/store 1725-2133  5 x vslideup + vse32, chained under the reduce tail
+next group  2090-     first vle32 of the next group issues 1 cy after vse32
+```
+
+Aggregated over the launch: the reduce phase costs **62.1%** of all
+kernel cycles; loads are in flight during only 30.1% of them.
+
+### 4.1 The reduction unit is the bottleneck
+
+Measured `vfredusum` behavior:
+
+| vl (e32) | occupancy | acceptance interval |
+|---|---|---|
+| 256 (m4) | 446 cy | ~224 cy |
+| 64 (m1, after fold) | 206 cy | ~103 cy |
+
+Linear fit: **`vfredusum ≈ 126 + 1.25 × vl` cycles, non-pipelined**
+(next reduce accepted at roughly half the previous one's occupancy).
+Reductions execute near element-serial and do not benefit from the four
+lanes.  Consequences:
+
+- Six back-to-back full-width reduces serialize into a 1,362-cycle
+  phase during which the (independent!) next group's loads cannot
+  issue: with `chainingSize = 4`, the outstanding reduces occupy the
+  instruction slots and stall the in-order issue front end.
+- This also retroactively explains v1: the generic `reduce_add`
+  lowering (log2 slide/add tree + `vfredosum`) paid this fixed cost
+  *and* a tree of dependent slides per row.
+
+### 4.2 v6: fold with the lanes, reduce only the stub
+
+The lanes add at 8 f32/cycle and chain; the reduction unit does ~0.8
+elem/cycle and does not.  So v6 folds each m4 accumulator 256→128→64
+with two lane-parallel `vfadd.vv` (measured occupancy 67 cy, fully
+chained) and reduces only 64 elements:
+
+- fold+reduce phase per group: 1,362 → **830 cycles**
+- layer kernel: 1,088,598 → **824,567 cycles (-24%)**
+
+The reduce phase is still 50% of the kernel — `vfredusum`'s ~126-cycle
+fixed cost now dominates its own execution.
+
+### 4.3 Load phase: 48% of peak bandwidth, VRF-port bound
+
+During the load phase the cadence is one m4 load (1 KiB = 32 AXI
+beats) per ~66 cycles ≈ 15.5 B/cycle against the 32 B/cycle AXI peak.
+The LSU (3 MSHRs, 96-deep VRF write queue) keeps two loads in flight,
+but every load must *write* the VRF while the chained `vfmul`/`vfmacc`
+*reads* two operand groups from it — with single-port (`p0rw`) banked
+VRF RAM at `portFactor` 4, the write and read streams contend for bank
+ports.  The ~2× gap between achieved and peak bandwidth is consistent
+with load writes losing roughly half the port slots to execution reads
+(hypothesis; confirming it needs VRF-port waveforms rather than the
+retirement trace).
+
+## 5. Where the next factor is (software)
+
+In v6, per group: loads ~585 cy (irreducible at current VRF: 252 beats
+minimum = 43% of that), fold+reduce ~830 cy, of which only ~180 cy is
+lane work.  The two phases barely overlap because the in-order front
+end cannot issue the next group's loads past the outstanding reduces.
+
+1. **Software pipelining across groups** — start group *i+1*'s loads
+   before group *i*'s fold/reduce section.  Requires freeing two vector
+   register groups for double buffering (5-row groups instead of 6) and
+   staying within the 4-slot budget: expected to hide most of the load
+   phase under the reduce phase, bounding the group at ~max(585, 830) ≈
+   830 cy → ~25% further.
+2. **Amortize the reduce fixed cost** — reduce two rows per
+   `vfredusum` by first `vslideup`-merging two 64-elem stubs into one
+   128-elem register (1 fold more, half the reduces): saves ~6 × 63 cy
+   fixed per group at the cost of 3 slides + later scalar split; ~10%.
+3. **Attention at long context**: `_dot`'s vl=hs=64 reduce pays the
+   same 126-cycle fixed cost per cached position; at pos ≫ 64 this
+   dominates attention.  Batch the dot products (one m4/m8 load of
+   several K rows, MAC against broadcast q, fold, one reduce per 4-8
+   positions) before long-context runs.
+
+## 6. Hardware co-design notes
+
+The same numbers, read as design feedback for blastoise-class configs:
+
+- **A pipelined (or logarithmic) reduction unit is the single highest
+  value change for GEMV/attention workloads**: `vfredusum` at
+  126 + 1.25/elem non-pipelined makes reductions 50-62% of a
+  bandwidth-starved kernel.  A tree reducer at DLEN width would cut the
+  variable cost to vl/8 and pipelining would remove the serialization;
+  both together turn the reduce phase into noise (<5%).
+- **`chainingSize` 4 is the second limiter**: long-occupancy
+  instructions (reduces today, possibly gathers tomorrow) fill all four
+  slots and stall issue of independent memory traffic.  6-8 slots, or
+  an issue policy that reserves one slot for loads, would let the load
+  phase run under the reduce phase with no software pipelining at all.
+- **VRF port pressure caps streaming at ~50%** of AXI bandwidth in
+  load+MAC phases.  `portFactor` or a two-port VRF option trades area
+  for the other 2× — worthwhile only after the reduction unit, since
+  today the load phase is not the critical path.
+- The scalar core is never the problem: a minimal in-order Rocket
+  fully hides the bookkeeping of hand-tiled vector loops behind
+  chaining.  Spending area on the vector side (reduction, slots, VRF
+  ports) beats any scalar-side improvement for these kernels.
+
+## 7. Hardware tuning under DLEN = 256 (measured)
+
+Config-space experiments on `designs/blastoise.toml`
+(`T1/runtime/blastoise-tuning.patch`), v6 kernels, stories15M:
+
+| Config (DLEN = 256 fixed) | layer kernel | head kernel | verdict |
+|---|---|---|---|
+| baseline: `p0rw`, 4 banks, 4x64b lanes | 824,567 | 8,310,745 | |
+| **`p0rp1w` (1R1W two-port VRF) + 8 banks** | **784,929 (-4.8%)** | **7,990,760 (-3.8%)** | **adopted** |
+| + `laneScale=1` (8x32b lanes) | 851,885 | — | rejected: `vfredusum` occupancy 206 -> 252 (deeper cross-lane combine), loads unchanged |
+| `chainingSize=8` | does not elaborate | — | generator hardcodes 4 slot pipelines; filed [xinpian-tech/T1#175](https://github.com/xinpian-tech/T1/issues/175) |
+
+The two-port VRF confirms §4.3 exactly where predicted: m4 load
+occupancy 123 → 92 cycles, load cadence 66 → 49 cycles — and the
+fold+reduce phase is unchanged (830 → 835), because the reduction unit
+does not touch VRF load-write ports.  With the load phase now ~44%
+faster and the reduce phase untouched, the reduce share rises further:
+the config space under DLEN = 256 is effectively exhausted, and the two
+remaining walls — the non-pipelined ~`126 + 1.25/elem` reduction unit
+and the hardcoded 4 instruction slots — both require RTL changes
+(§6, issue #175).
+
+## 8. Reproducing
+
+```sh
+# run any workload on the RTL simulator with per-launch traces kept:
+T1RT_KEEP_RTL_EVENTS=1 SIM=rtl ./run-t1llama.sh stories "" 1
+# analyze a launch trace:
+python3 T1/tools/analyze-rtl-trace.py run/rtl-event.0.jsonl
+```
+
+The trace analyzer (occupancy/gap tables, in-flight histogram,
+scalar-overlap ratio) lives in `T1/tools/analyze-rtl-trace.py`; the
+dynamic instruction-mix tool from the previous commit is
+`T1/tools/analyze-rvv-mix.py`.
