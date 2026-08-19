@@ -26,4 +26,9 @@ mkdir -p "$OUT"
 "$OBJCOPY" -O binary "$OUT/trampoline.elf" "$OUT/trampoline.bin"
 
 "$CC" -O1 -o "$OUT/t1rt_smoke" t1rt_smoke.c "$OUT/libT1RT.so" -Wl,-rpath,"$OUT"
-echo "built: $OUT/libT1RT.so $OUT/trampoline.bin $OUT/t1rt_smoke"
+
+# Regenerate the mem* builtins object embedded in the compiler backend
+# (KGEN/.../T1/t1_builtins.inc) whenever t1_builtins.S changes.
+"$RV_CLANG" --target=riscv32-unknown-elf -march=rv32imafc_zve32f_zvl2048b   -mabi=ilp32 -c t1_builtins.S -o "$OUT/t1_builtins.o"
+
+echo "built: $OUT/libT1RT.so $OUT/trampoline.bin $OUT/t1rt_smoke $OUT/t1_builtins.o"

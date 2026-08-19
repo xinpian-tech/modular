@@ -1367,6 +1367,7 @@ modular_cc_library(
     hdrs = [
         "lib/Compiler/ObjectCompiler/Target/Host/HostBackend.h",
         "lib/Compiler/ObjectCompiler/Target/T1/T1Backend.h",
+        "lib/Compiler/ObjectCompiler/Target/T1/t1_builtins.inc",
     ],
     strip_include_prefix = "lib/Compiler/ObjectCompiler",
     visibility = [
@@ -1412,6 +1413,7 @@ modular_cc_library(
             "lib/Compiler/ObjectCompiler/Target/Host/HostBackend.h",
             "lib/Compiler/ObjectCompiler/Target/T1/T1Backend.cpp",
             "lib/Compiler/ObjectCompiler/Target/T1/T1Backend.h",
+            "lib/Compiler/ObjectCompiler/Target/T1/t1_builtins.inc",
         ],
     ),
     data = [
