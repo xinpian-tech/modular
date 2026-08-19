@@ -1858,6 +1858,8 @@ struct GPUInfo(Copyable, Equatable, Movable, RegisterPassable, Writable):
             return _get_metal_m5_target()
         if self.name == "M5 Metal4":
             return _get_metal_m5_metal4_target()
+        if self.name == "T1":
+            return _get_t1_target()
 
         if self.name == "":
             return _get_empty_target()
@@ -2042,6 +2044,59 @@ def _build_unsupported_arch_error[target_arch: StaticString]() -> String:
 
 
 # ===-----------------------------------------------------------------------===#
+# T1
+# ===-----------------------------------------------------------------------===#
+
+
+def _get_t1_target() -> _TargetType:
+    """Creates an MLIR target configuration for the T1 RVV accelerator.
+
+    T1 is a bare-metal RV32 scalar frontend with the RISC-V Vector extension
+    (Zve32f). The values below match the default T1 design ("blastoise"):
+    rv32imafc_zve32f_zvl2048b, VLEN = 2048. `simd_bit_width` carries VLEN so
+    `simd_width_of[DType.float32]()` yields VLEN / 32 lanes on this target;
+    `index_bit_width = 32` makes device `Int`/pointers 32-bit.
+
+    Returns:
+        MLIR target configuration for T1.
+    """
+    return __mlir_attr[
+        `#kgen.target<triple = "riscv32-unknown-elf", `,
+        `stdlib_plugin = "default", `,
+        `arch = "generic-rv32", `,
+        `features = "+m,+a,+c,+f,+zve32f,+zvl2048b", `,
+        `tune_cpu = "generic-rv32", `,
+        `data_layout = "e-m:e-p:32:32-i64:64-n32-S128", `,
+        `index_bit_width = 32, `,
+        `simd_bit_width = 2048`,
+        `> : !kgen.target`,
+    ]
+
+
+comptime T1Family = AcceleratorArchitectureFamily(
+    # T1 has no thread grid: parallelism lives inside one vector instruction
+    # (VLEN lanes). These fields are only consumed on is_gpu() paths.
+    warp_size=1,
+    threads_per_multiprocessor=1,
+    shared_memory_per_multiprocessor=0,
+    max_registers_per_block=0,
+    max_thread_block_size=1,
+)
+"""T1 RVV accelerator architecture family."""
+
+comptime T1 = GPUInfo.from_family(
+    family=T1Family,
+    name="T1",
+    api="t1",
+    arch_name="t1",
+    compute=0.0,
+    version="t1",
+    sm_count=1,
+)
+"""T1 RVV accelerator configuration (RV32, Zve32f, VLEN 2048)."""
+
+
+# ===-----------------------------------------------------------------------===#
 # _get_info_from_target
 # ===-----------------------------------------------------------------------===#
 
@@ -2100,6 +2155,7 @@ comptime _all_targets = (
     StaticString("apple-m5"),
     StaticString("apple-m5-metal4"),
     StaticString("cuda"),
+    StaticString("t1"),
 )
 
 
@@ -2233,6 +2289,8 @@ def _get_info_from_target[target_arch0: StaticString]() -> GPUInfo:
         return materialize[MetalM5]()
     elif target_arch == "apple-m5-metal4":
         return materialize[MetalM5Metal4]()
+    elif target_arch == "t1":
+        return materialize[T1]()
     # "cuda" means generic CUDA — use runtime GPU detection.
     elif target_arch == "cuda":
         return _get_info_from_target[_accelerator_arch()]()
