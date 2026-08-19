@@ -244,11 +244,19 @@ static const char *write_image(const char *path, const Segment *segs,
 
 /*--- the batch run -------------------------------------------------------*/
 
+static unsigned g_launch_no; /* for per-launch RTL event traces */
+
 static const char *run_emulator(T1Context *ctx, const char *image,
                                 uint32_t dump_lo, uint32_t dump_hi) {
   char event_path[4096], rtl_path[4096], memdump_path[4096];
   snprintf(event_path, sizeof event_path, "%s/mmio-event.jsonl", ctx->workdir);
-  snprintf(rtl_path, sizeof rtl_path, "%s/rtl-event.jsonl", ctx->workdir);
+  /* T1RT_KEEP_RTL_EVENTS=1 keeps one (large) RTL retirement trace per
+   * launch instead of overwriting a single file. */
+  if (getenv("T1RT_KEEP_RTL_EVENTS"))
+    snprintf(rtl_path, sizeof rtl_path, "%s/rtl-event.%u.jsonl", ctx->workdir,
+             g_launch_no++);
+  else
+    snprintf(rtl_path, sizeof rtl_path, "%s/rtl-event.jsonl", ctx->workdir);
   snprintf(memdump_path, sizeof memdump_path, "%s/memdump.bin", ctx->workdir);
   unlink(event_path);
   unlink(memdump_path);
