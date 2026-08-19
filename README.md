@@ -24,6 +24,19 @@ framework, see
 To get started with the Mojo language, see
 [the Mojo quickstart guide](https://mojolang.org/docs/manual/quickstart/).
 
+### Build the release with Nix
+
+A [Nix flake](flake.nix) rebuilds the Mojo release (compiler, standard
+library, debugger, LSP server and their wheels) from the sources in this
+repository — reproducibly, offline, natively in the Nix sandbox, and with a
+toolchain built entirely from source by nixpkgs (no prebuilt binaries
+anywhere). See [nix/README.md](nix/README.md).
+
+```sh
+nix build .#mojo       # Mojo, usable on NixOS
+nix build .#release    # the release: wheels + PEP 503 index
+```
+
 ## About the repo
 
 We're constantly open-sourcing more of the Modular Platform and you can find
