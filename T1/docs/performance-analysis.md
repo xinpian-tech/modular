@@ -513,11 +513,31 @@ config or kernel variant with cycle-level measurement:
 | VRF port contention | `p0rp1w` two-port + 8 banks | 342,808 | no effect |
 | shared float VFU | drop zvbb, `vfuInstantiateParameter=large` (per-slot float units) | 341,356 | no effect |
 
-What remains is the lane's documented slot-shift lockstep
-(`doc/en/DATAPATH.md`): instructions enqueue only into the last slot and
-all slots shift together only when slot 0 finishes, so back-to-back
-instructions of similar occupancy serialize at II ~ occupancy no matter
-how many functional units or ports exist.  At m=288 the kernel issues
+What remains is the lane's slot compaction machinery, read from the
+RTL rather than the docs (`t1zaozi/src/laneStage/Lane.scala`):
+
+1. Slots form a compaction queue toward slot 0; a hole appears exactly
+   when slot 0's instruction completes (`slotCanShift(0) :=
+   !slotOccupied(0)`, L319) and `slotShiftValid = scanLeftOr(~occupied)`
+   marks every position at-or-above a hole (L327).
+2. **A slot's element stream is frozen whenever a hole exists below
+   it**: for index >= 1, `slotActive` includes
+   `!slotShiftValid(index)` and gates the stage0 enqueue
+   (`s.io.enqueue.valid := slotActive & ...`, L754-763).  Every
+   completion therefore freezes every other in-flight arithmetic
+   instruction while the queue shifts.
+3. The stage0/1/2/3 pipelines and execution units are instantiated
+   **per slot index** (L711/880/914/938/980); shifting copies the
+   progress counters (`maskGroupCountVec`, `slotExecuteIndex`) into the
+   next slot's state, so after each shift the instruction's element
+   stream must refill a different pipeline instance from scratch.
+4. An instruction entering at slot 3 pays this freeze+shift+refill up
+   to three times before reaching slot 0 — which is why back-to-back
+   vfmacc occupancy (~90 cy for 36 cy of work) approximately equals the
+   initiation interval, independent of functional-unit count, VRF
+   ports, or data dependences.  Loads are immune because the LSU
+   executes them and the slot holds only bookkeeping — hence load issue
+   gaps of 9 cycles next to MAC gaps of 96 in the same trace.  At m=288 the kernel issues
 3,072 MACs x ~96 cy ~ 295k cycles of structural minimum; the measured
 341,281 is 87% of that bound (the rest is attention/rmsnorm/rope).
 
