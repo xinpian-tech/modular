@@ -66,6 +66,7 @@ comptime SEW = 32
 # VLMAX chunk lengths and assume they are granted in full.
 comptime VLEN = get_defined_int["T1_VLEN", 2048]()
 comptime MV_LMUL = get_defined_int["T1_MV_LMUL", 2]()
+comptime MV_TRANSPOSED = get_defined_int["T1_MV_T", 1]() != 0
 comptime EW_LMUL = get_defined_int["T1_EW_LMUL", 8]()
 
 comptime _VCLOB2 = (
@@ -73,7 +74,7 @@ comptime _VCLOB2 = (
     "~{v11},~{v12},~{v13},~{v14},~{v15},~{v16},~{v17},~{v18},~{v19},~{v20},"
     "~{v21},~{v22},~{v23},~{v24},~{v25},~{v26},~{v27},~{v28},~{v29},~{v30},"
     "~{v31},~{t0},~{t1},~{t2},~{t3},~{t4},~{t5},~{t6},~{a4},~{a5},~{s2},"
-    "~{s3},~{s4},~{s5},~{s6},~{s7},~{ft0},~{memory}"
+    "~{s3},~{s4},~{s5},~{s6},~{s7},~{ft0},~{ft1},~{memory}"
 )
 
 comptime _VCLOB = (
@@ -235,6 +236,63 @@ def _mv_asm[sew: Int, lmul: Int]() -> String:
     return body
 
 
+def _mv_t_asm[sew: Int, lmul: Int]() -> String:
+    """Reduction-free matvec over an offline-TRANSPOSED weight matrix
+    (wt[n][m], row-major): each output block accumulates every column via
+    a chained vfmacc.vf — no per-row init/fold/vfredusum/slide.  The
+    scalar x[c] is loaded one column AHEAD into alternating f-registers:
+    the T1 RTL does not interlock an flw writeback with a following
+    OPFVF's scalar capture (stale-fs1 hazard, found by this kernel), and
+    the software pipelining both hides the load and keeps >=4
+    instructions between each flw and its consumer.  Contract: n even.
+    $0=wt, $1=x, $2=n (columns), $3=m (outputs), $4=out."""
+    comptime shift = String(2 if sew == 32 else 1)
+    comptime esz = String(sew // 8)
+    return (
+        "mv s2, $3\n"
+        + "mv s5, $4\n"
+        + "mv s3, $0\n"
+        + "slli s6, $3, " + shift + "\n"
+        + "1:\n"
+        + "vsetvli t0, s2, e" + String(sew) + ", m" + String(lmul)
+        + ", ta, ma\n"
+        + "vmv.v.i v8, 0\n"
+        + "mv t1, $2\n"
+        + "mv t2, $1\n"
+        + "mv t3, s3\n"
+        + "flw ft0, 0(t2)\n"
+        + "2:\n"
+        + _vle[sew]() + " v16, (t3)\n"
+        + "flw ft1, " + esz + "(t2)\n"
+        + "add t3, t3, s6\n"
+        + "vfmacc.vf v8, ft0, v16\n"
+        + _vle[sew]() + " v24, (t3)\n"
+        + "flw ft0, " + String(2 * (sew // 8)) + "(t2)\n"
+        + "add t3, t3, s6\n"
+        + "vfmacc.vf v8, ft1, v24\n"
+        + "addi t2, t2, " + String(2 * (sew // 8)) + "\n"
+        + "addi t1, t1, -2\n"
+        + "bnez t1, 2b\n"
+        + _vse[sew]() + " v8, (s5)\n"
+        + "slli t0, t0, " + shift + "\n"
+        + "add s5, s5, t0\n"
+        + "add s3, s3, t0\n"
+        + "srli t0, t0, " + shift + "\n"
+        + "sub s2, s2, t0\n"
+        + "bnez s2, 1b\n"
+    )
+
+
+@always_inline
+def _mv_transposed(wt: F32Ptr, x: F32Ptr, n: Int, m: Int, out_ptr: F32Ptr):
+    comptime asm = StaticString(materialize[_mv_t_asm[SEW, 8]()]())
+    inlined_assembly[
+        asm,
+        NoneType,
+        constraints="r,r,r,r,r," + _VCLOB2,
+    ](wt, x, n, m, out_ptr)
+
+
 @always_inline
 def _mv(w: F32Ptr, x: F32Ptr, n: Int, rows: Int, out_ptr: F32Ptr):
     """Software-pipelined matvec at the file-level MV_LMUL/SEW shape.
@@ -315,14 +373,19 @@ def _mv1(w: F32Ptr, x: F32Ptr, n: Int, out_ptr: F32Ptr):
 
 @always_inline
 def _matvec(out_ptr: F32Ptr, w: F32Ptr, x: F32Ptr, m: Int, n: Int):
-    """out[i] = dot(w[i, :], x) for a row-major w[m, n] (n >= VLMAX)."""
-    var groups = m - m % 4
-    if groups > 0:
-        _mv(w, x, n, groups, out_ptr)
-    var i = groups
-    while i < m:
-        _mv1(w.unsafe_offset(i * n), x, n, out_ptr.unsafe_offset(i))
-        i += 1
+    """out[i] = dot(w[i, :], x).  With MV_TRANSPOSED the weight buffer
+    holds the offline-transposed matrix (see `_stage`) and the
+    reduction-free column-accumulation kernel runs instead."""
+    comptime if MV_TRANSPOSED:
+        _mv_transposed(w, x, n, m, out_ptr)
+    else:
+        var groups = m - m % 4
+        if groups > 0:
+            _mv(w, x, n, groups, out_ptr)
+        var i = groups
+        while i < m:
+            _mv1(w.unsafe_offset(i * n), x, n, out_ptr.unsafe_offset(i))
+            i += 1
 
 
 def _dot_asm[sew: Int, lmul: Int]() -> String:
@@ -705,6 +768,27 @@ def _read_full(f: FileHandle, ptr: Pointer[mut=True, Float32, _], n: Int) raises
         got += bytes_read // 4
 
 
+def _read_mat[
+    o1: MutOrigin, //
+](f: FileHandle, dst: Pointer[Float32, o1], m: Int, n: Int,
+  mut tmp: List[Float32]) raises:
+    """Reads an [m, n] row-major matrix; with MV_TRANSPOSED it is stored
+    transposed ([n, m]) so the reduction-free matvec can accumulate
+    columns with vfmacc.vf."""
+    comptime if MV_TRANSPOSED:
+        _read_full(f, tmp.unsafe_ptr(), m * n)
+        var tp = tmp.unsafe_ptr()
+        var i = 0
+        while i < m:
+            var j = 0
+            while j < n:
+                dst.unsafe_store(j * m + i, tp.unsafe_load(i * n + j))
+                j += 1
+            i += 1
+    else:
+        _read_full(f, dst, m * n)
+
+
 @fieldwise_init
 struct Config(Copyable, Movable):
     var dim: Int
@@ -920,10 +1004,13 @@ def main() raises:
     # Head weights never change: load them once.
     var staging = List[Float32](length=head_words, fill=0)
     var sp = staging.unsafe_ptr()
+    var tmp = List[Float32](
+        length=cfg.vocab * cfg.dim if MV_TRANSPOSED else 1, fill=0
+    )
     _ = f.seek(rms_final_off)
     _read_full(f, sp, cfg.dim)
     _ = f.seek(wcls_off)
-    _read_full(f, sp.unsafe_offset(cfg.dim), cfg.vocab * cfg.dim)
+    _read_mat(f, sp.unsafe_offset(cfg.dim), cfg.vocab, cfg.dim, tmp)
     wh_b.enqueue_copy_from(sp)
 
     var hdr_host = List[Int32](length=8, fill=0)
@@ -972,28 +1059,28 @@ def main() raises:
             _read_full(f, sp.unsafe_offset(o), cfg.dim)
             o += cfg.dim
             _ = f.seek(wq_off + 4 * l * cfg.dim * cfg.dim)
-            _read_full(f, sp.unsafe_offset(o), cfg.dim * cfg.dim)
+            _read_mat(f, sp.unsafe_offset(o), cfg.dim, cfg.dim, tmp)
             o += cfg.dim * cfg.dim
             _ = f.seek(wk_off + 4 * l * cfg.dim * cfg.kv_dim)
-            _read_full(f, sp.unsafe_offset(o), cfg.dim * cfg.kv_dim)
+            _read_mat(f, sp.unsafe_offset(o), cfg.kv_dim, cfg.dim, tmp)
             o += cfg.dim * cfg.kv_dim
             _ = f.seek(wv_off + 4 * l * cfg.dim * cfg.kv_dim)
-            _read_full(f, sp.unsafe_offset(o), cfg.dim * cfg.kv_dim)
+            _read_mat(f, sp.unsafe_offset(o), cfg.kv_dim, cfg.dim, tmp)
             o += cfg.dim * cfg.kv_dim
             _ = f.seek(wo_off + 4 * l * cfg.dim * cfg.dim)
-            _read_full(f, sp.unsafe_offset(o), cfg.dim * cfg.dim)
+            _read_mat(f, sp.unsafe_offset(o), cfg.dim, cfg.dim, tmp)
             o += cfg.dim * cfg.dim
             _ = f.seek(rms_ffn_off + 4 * l * cfg.dim)
             _read_full(f, sp.unsafe_offset(o), cfg.dim)
             o += cfg.dim
             _ = f.seek(w1_off + 4 * l * cfg.dim * cfg.hidden)
-            _read_full(f, sp.unsafe_offset(o), cfg.dim * cfg.hidden)
+            _read_mat(f, sp.unsafe_offset(o), cfg.hidden, cfg.dim, tmp)
             o += cfg.dim * cfg.hidden
             _ = f.seek(w2_off + 4 * l * cfg.dim * cfg.hidden)
-            _read_full(f, sp.unsafe_offset(o), cfg.dim * cfg.hidden)
+            _read_mat(f, sp.unsafe_offset(o), cfg.dim, cfg.hidden, tmp)
             o += cfg.dim * cfg.hidden
             _ = f.seek(w3_off + 4 * l * cfg.dim * cfg.hidden)
-            _read_full(f, sp.unsafe_offset(o), cfg.dim * cfg.hidden)
+            _read_mat(f, sp.unsafe_offset(o), cfg.hidden, cfg.dim, tmp)
             wl_b.enqueue_copy_from(sp)
             ctx.enqueue_function[t1_layer](
                 hdr_b, rope_b, x_b, wl_b, kv_bufs[l], sc_b,

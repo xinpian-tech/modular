@@ -447,7 +447,60 @@ initiation interval.  Cutting those two numbers (deeper decoupling of
 the issue-to-lane path; a pipelined reduction tree) is worth more than
 every configuration axis combined.
 
-## 14. Reproducing
+## 14. Solving startup and dead time — measured and proposed
+
+### 14.1 Software (measured): remove the chain, not the links
+
+If the pair period is a stack of dependent startups (§13), the winning
+move is fewer, longer-lived instructions per dependence chain.  The
+weights are already re-staged every launch, so the loader now stores
+each matrix **transposed** (`-D T1_MV_T=1`, default) and the matvec
+becomes reduction-free column accumulation: for each output block, one
+`vmv.v.i`, then n chained `vle32` + `vfmacc.vf x[c]` pairs, one
+`vse32`.  No per-row init, no fold ladder, no `vfredusum`, no slides,
+no scalar result stores — per matvec the startup is paid once and the
+dead-time-bound reduction unit is not used at all:
+
+| kernel (RTL, stock config) | layer | head |
+|---|---|---|
+| best dot-product kernel (§9) | 817,844 | 8,310,745 |
+| transposed, reduction-free | **341,281 (2.40x)** | **2,644,595 (3.14x)** |
+
+Cumulative over the generic-SIMD baseline: **9.8x** (layer).  The
+kernel is now genuinely streaming-bound; the remaining 2.6x to the
+~130k-cycle memory floor is per-column load startup — attackable with
+multi-column unrolling (more independent loads in flight) rather than
+any reduction machinery.  Reductions survive only in attention/rmsnorm,
+where they are O(heads + 2) per layer instead of O(rows).
+
+### 14.2 A silent-corruption RTL bug, found by this kernel
+
+The first transposed run produced wrong tokens on the RTL while pokedex
+was exact.  Minimized: back-to-back `flw` + `vfmacc.vf` executes the
+second MAC with the *previous* `fs1` value — the Rocket->T1 request
+path captures the scalar operand without a RAW interlock against the
+in-flight `flw` writeback (n=1 correct, n=2 corrupts, 4 filler
+instructions fix it; register renaming does not).  Reported with the
+minimal repro as xinpian-tech/T1#178.  The generator works around it by
+software-pipelining the scalar loads one column ahead into alternating
+f-registers.
+
+### 14.3 Hardware proposals, ranked by measured leverage
+
+1. **Pipelined (tree) reduction unit** — initiation 95-127 cy for 8 cy
+   of work today.  Still first for workloads that cannot transpose
+   (attention scores at long context, softmax, rmsnorm), and it would
+   have made §4-§12 unnecessary.
+2. **Fix #178** (correctness, not performance).
+3. **Cut the ~47-cycle instruction startup**: a fast path for unmasked
+   unit-stride ops that skips the mask-pipeline stages, plus cracking
+   `vsetvli`+op pairs at dispatch, would shorten every dependence chain
+   T1 ever runs; at the measured chain lengths this is worth ~20% even
+   on the transposed kernel.
+4. **Deeper per-lane write queues** only if wide lanes are ever chosen
+   (§12.1); at 4 x 64b it is not the constraint.
+
+## 15. Reproducing
 
 ```sh
 # run any workload on the RTL simulator with per-launch traces kept:
