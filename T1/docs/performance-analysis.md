@@ -201,7 +201,59 @@ remaining walls — the non-pipelined ~`126 + 1.25/elem` reduction unit
 and the hardcoded 4 instruction slots — both require RTL changes
 (§6, issue #175).
 
-## 8. Reproducing
+## 8. Does 8-deep chaining help?  (measured: no — and why)
+
+With the elaboration fix (xinpian-tech/T1#176) `chainingSize=8` builds and
+runs.  Two kernel generations, both configs, stories15M:
+
+| Kernel | slots=4 | slots=8 | delta |
+|---|---|---|---|
+| v6 (fold+reduce after each 6-row group) — layer | 824,567 | 833,917 | +1.1% |
+| v6 — head | 8,310,745 | 8,422,698 | +1.3% |
+| v7 (software-pipelined pairs, conflict-free registers) — layer | 759,219 | 755,400 | **-0.5%** |
+
+v6 cannot exploit extra slots for a *software* reason: its reduce
+destinations (v0-v6) alias the next group's load buffers (w v0-v3,
+x v4-v7), so the register dependence — not the slot count — blocks
+cross-group overlap.  v7 removes the aliasing (buffers v0/v4, reduce
+stubs v24-v26) and interleaves each pair's fold+`vfredusum` into the next
+pair's load stream: 8.6% faster than v6, but **identical between 4 and 8
+slots**.
+
+The v7@cs8 retirement trace explains it: the vector unit is completely
+idle **46.9%** of kernel cycles, at most 5 instructions ever in flight,
+and scalar-under-vector overlap drops to 57% (from 96-100% in v6).  The
+issue front end — vtype ping-pong between the m4 compute shape and the
+m1/m2 fold/reduce shapes, plus the scalar bookkeeping between interleave
+points that can no longer hide under long vector phases — is the limiter.
+Four slots were never the binding constraint for this kernel family;
+the §6 recommendation is revised accordingly: pipelining/shortening the
+reduction unit remains the high-value hardware change, extra slots are
+not.
+
+## 9. SEW/LMUL/vl-templated kernels and the LMUL sweep
+
+All hand-written helpers are now generated at compile time from
+SEW/LMUL parameters (`t1llama.mojo`: `MV_LMUL`, `EW_LMUL`, overridable
+with `-D T1_MV_LMUL=<1|2|4>`); vl always follows as VLMAX of the shape
+with `vsetvli` strip-mining for remainders, and the matvec derives its
+whole register allocation (load buffers, double-buffered accumulator
+pairs, reduce stubs, fold ladder depth = log2 LMUL) from the parameter.
+
+Layer kernel, stock config, greedy output identical for all shapes:
+
+| MV_LMUL | chunk (e32) | layer cycles |
+|---|---|---|
+| 1 | 64 | 896,996 |
+| **2** | **128** | **751,127** |
+| 4 | 256 | 758,733 (= hand-written v7 within 0.06%) |
+
+LMUL=2 edges out LMUL=4: the shorter reduce stubs and cheaper fold
+ladder outweigh the doubled loop-iteration count; LMUL=1 loses to pure
+per-iteration overhead.  The generator makes such sweeps a rebuild flag
+instead of an assembly rewrite.
+
+## 10. Reproducing
 
 ```sh
 # run any workload on the RTL simulator with per-launch traces kept:

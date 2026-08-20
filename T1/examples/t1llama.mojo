@@ -32,6 +32,7 @@ from std.collections import Dict
 from std.io.file import FileHandle
 from std.math import cos, exp, log, sin, sqrt
 from std.sys import argv, inlined_assembly
+from std.sys.defines import get_defined_int
 from std.sys.info import simd_width_of
 from std.time import perf_counter_ns
 
@@ -43,6 +44,27 @@ comptime I32Ptr = Pointer[Int32, MutAnyOrigin]
 # Device kernels
 # ===----------------------------------------------------------------------=== #
 
+
+# ===----------------------------------------------------------------------=== #
+# Templated RVV kernels.
+#
+# Every hand-written vector helper below is generated at compile time from
+# SEW / LMUL parameters (`vl` follows as VLMAX of the chosen shape, with any
+# remainder strip-mined by `vsetvli`), so shapes can be swept and evaluated
+# without touching the assembly:
+#
+#   comptime MV_LMUL = 4   # matvec chunk register-group width
+#   comptime EW_LMUL = 8   # elementwise (rmsnorm/residual) strip width
+#
+# The matvec generator derives its whole register allocation from LMUL:
+# w buffer v0, x buffer v[L], double-buffered accumulator pairs A/B at
+# v[2L]..v[5L], reduce stubs at v[6L].. — 6L + 3 registers, so L in {1,2,4}.
+# ===----------------------------------------------------------------------=== #
+
+comptime SEW = 32
+comptime VLEN = 2048
+comptime MV_LMUL = get_defined_int["T1_MV_LMUL", 4]()
+comptime EW_LMUL = get_defined_int["T1_EW_LMUL", 8]()
 
 comptime _VCLOB2 = (
     "~{v0},~{v1},~{v2},~{v3},~{v4},~{v5},~{v6},~{v7},~{v8},~{v9},~{v10},"
@@ -60,194 +82,359 @@ comptime _VCLOB = (
 )
 
 
-# Four rows of a row-major matvec in one hand-written RVV loop: one m4 x-chunk
-# load is shared by four w rows (4x less x traffic), the strip-mined `vsetvli`
-# handles any n without a scalar tail (tail-undisturbed keeps the zeroed lanes
-# of the accumulators intact), and each row ends in a single *unordered*
-# `vfredusum` instead of the log2 slide/add tree the generic reduction lowers
-# to.  VLEN=2048: m4 = 256 f32 lanes per group.
+def _vlmax(sew: Int, lmul: Int) -> Int:
+    return VLEN * lmul // sew
+
+
+def _vle[sew: Int]() -> String:
+    return "vle" + String(sew) + ".v"
+
+
+def _vse[sew: Int]() -> String:
+    return "vse" + String(sew) + ".v"
+
+
+def _cfg(sew: Int, lmul: Int, vl: Int) -> String:
+    """`vsetvli` to a fixed vl of shape e{sew}/m{lmul} (through t5)."""
+    return (
+        "li t5, " + String(vl) + "\n"
+        + "vsetvli zero, t5, e" + String(sew) + ", m" + String(lmul)
+        + ", ta, ma\n"
+    )
+
+
+def _mv_compute_pair[
+    sew: Int, lmul: Int
+](acc0: Int, acc1: Int, label: Int) -> String:
+    """One 2-row pair of the matvec: pointer setup, first chunk via vfmul
+    (accumulator init for free), full chunks under a hoisted vl, `tu` tail."""
+    comptime chunk = _vlmax(sew, lmul)
+    comptime cb = String(chunk * sew // 8)
+    var w = "v0"
+    var x = "v" + String(lmul)
+    var a0 = "v" + String(acc0)
+    var a1 = "v" + String(acc1)
+    var body = (
+        "mv t2, s4\n"
+        + "mv t3, s3\n"
+        + "add t4, t3, s6\n"
+        + "add s3, t4, s6\n"
+        + "mv t1, $2\n"
+        + _vle[sew]() + " " + x + ", (t2)\n"
+        + _vle[sew]() + " " + w + ", (t3)\n"
+        + "vfmul.vv " + a0 + ", " + x + ", " + w + "\n"
+        + _vle[sew]() + " " + w + ", (t4)\n"
+        + "vfmul.vv " + a1 + ", " + x + ", " + w + "\n"
+        + "addi t1, t1, -" + String(chunk) + "\n"
+        + "addi t2, t2, " + cb + "\n"
+        + "addi t3, t3, " + cb + "\n"
+        + "addi t4, t4, " + cb + "\n"
+        + "bltu t1, t0, " + String(label + 1) + "f\n"
+        + String(label) + ":\n"
+        + _vle[sew]() + " " + x + ", (t2)\n"
+        + _vle[sew]() + " " + w + ", (t3)\n"
+        + "vfmacc.vv " + a0 + ", " + x + ", " + w + "\n"
+        + _vle[sew]() + " " + w + ", (t4)\n"
+        + "vfmacc.vv " + a1 + ", " + x + ", " + w + "\n"
+        + "addi t1, t1, -" + String(chunk) + "\n"
+        + "addi t2, t2, " + cb + "\n"
+        + "addi t3, t3, " + cb + "\n"
+        + "addi t4, t4, " + cb + "\n"
+        + "bgeu t1, t0, " + String(label) + "b\n"
+        + String(label + 1) + ":\n"
+        + "beqz t1, " + String(label + 2) + "f\n"
+        + "vsetvli t0, t1, e" + String(sew) + ", m" + String(lmul)
+        + ", tu, ma\n"
+        + _vle[sew]() + " " + x + ", (t2)\n"
+        + _vle[sew]() + " " + w + ", (t3)\n"
+        + "vfmacc.vv " + a0 + ", " + x + ", " + w + "\n"
+        + _vle[sew]() + " " + w + ", (t4)\n"
+        + "vfmacc.vv " + a1 + ", " + x + ", " + w + "\n"
+        + "li t0, " + String(chunk) + "\n"
+        + "vsetvli zero, t0, e" + String(sew) + ", m" + String(lmul)
+        + ", ta, ma\n"
+        + String(label + 2) + ":\n"
+    )
+    return body
+
+
+def _mv_fold_pair[sew: Int, lmul: Int](acc0: Int, acc1: Int) -> String:
+    """log2(LMUL) lane-parallel vfadd stages: fold both accumulators of a
+    pair down to one m1 register each (the reduce stub)."""
+    var body = String("")
+    var l = lmul // 2
+    while l >= 1:
+        body += _cfg(sew, l, _vlmax(sew, l))
+        body += (
+            "vfadd.vv v" + String(acc0) + ", v" + String(acc0)
+            + ", v" + String(acc0 + l) + "\n"
+        )
+        body += (
+            "vfadd.vv v" + String(acc1) + ", v" + String(acc1)
+            + ", v" + String(acc1 + l) + "\n"
+        )
+        l //= 2
+    return body
+
+
+def _mv_reduce_pair[
+    sew: Int, lmul: Int
+](acc0: Int, acc1: Int, dest: Int, which: Int) -> String:
+    """One unordered vfredusum of a folded m1 stub into dest / dest+1."""
+    var body = _cfg(sew, 1, _vlmax(sew, 1))
+    body += (
+        "vfredusum.vs v" + String(dest + which) + ", v"
+        + String(acc0 if which == 0 else acc1) + ", v" + String(dest + 2)
+        + "\n"
+    )
+    return body
+
+
+def _mv_store_pair[sew: Int, lmul: Int](dest: Int) -> String:
+    comptime chunk = _vlmax(sew, lmul)
+    return (
+        "vsetivli zero, 2, e" + String(sew) + ", m1, tu, ma\n"
+        + "vslideup.vi v" + String(dest) + ", v" + String(dest + 1) + ", 1\n"
+        + _vse[sew]() + " v" + String(dest) + ", (s5)\n"
+        + "addi s5, s5, " + String(2 * sew // 8) + "\n"
+        + "li t0, " + String(chunk) + "\n"
+        + "vsetvli zero, t0, e" + String(sew) + ", m" + String(lmul)
+        + ", ta, ma\n"
+    )
+
+
+def _mv_asm[sew: Int, lmul: Int]() -> String:
+    """The full software-pipelined matvec: pair B's load stream issues
+    interleaved with pair A's fold/vfredusum, double-buffered so the load
+    buffers (v0, v[L]) and reduce registers never collide with the busy
+    accumulators.  Register budget 6L+3 => LMUL in {1, 2, 4}."""
+    comptime chunk = _vlmax(sew, lmul)
+    comptime a0 = 2 * lmul
+    comptime a1 = 3 * lmul
+    comptime b0 = 4 * lmul
+    comptime b1 = 5 * lmul
+    comptime dst = 6 * lmul
+    var body = (
+        "mv s2, $3\n"
+        + "mv s3, $0\n"
+        + "mv s4, $1\n"
+        + "mv s5, $4\n"
+        + "slli s6, $2, " + String(2 if sew == 32 else 1) + "\n"
+        + "li t0, " + String(chunk) + "\n"
+        + "vsetvli zero, t0, e" + String(sew) + ", m" + String(lmul)
+        + ", ta, ma\n"
+        + "vmv.s.x v" + String(dst + 2) + ", zero\n"
+    )
+    body += _mv_compute_pair[sew, lmul](a0, a1, 1)
+    body += "addi s2, s2, -2\n"
+    body += "4:\n"
+    # pair B compute interleaved with pair A fold/reduce
+    body += "mv t2, s4\nmv t3, s3\nadd t4, t3, s6\nadd s3, t4, s6\n"
+    body += "mv t1, $2\n"
+    body += _mv_fold_pair[sew, lmul](a0, a1)
+    body += _mv_reduce_pair[sew, lmul](a0, a1, dst, 0)
+    body += _cfg(sew, lmul, chunk)
+    body += "li t0, " + String(chunk) + "\n"
+    body += _mv_compute_body_swap[sew, lmul](b0, b1, a0, a1, dst, 5)
+    return body
+
+
+def _mv_compute_body_swap[
+    sew: Int, lmul: Int
+](b0: Int, b1: Int, a0: Int, a1: Int, dst: Int, label: Int) -> String:
+    """Second half of the steady loop plus the mirrored half and epilogues."""
+    comptime chunk = _vlmax(sew, lmul)
+    comptime cb = String(chunk * sew // 8)
+    var w = "v0"
+    var x = "v" + String(lmul)
+    var body = (
+        _vle[sew]() + " " + x + ", (t2)\n"
+        + _vle[sew]() + " " + w + ", (t3)\n"
+        + "vfmul.vv v" + String(b0) + ", " + x + ", " + w + "\n"
+        + _vle[sew]() + " " + w + ", (t4)\n"
+        + "vfmul.vv v" + String(b1) + ", " + x + ", " + w + "\n"
+        + "addi t1, t1, -" + String(chunk) + "\n"
+        + "addi t2, t2, " + cb + "\n"
+        + "addi t3, t3, " + cb + "\n"
+        + "addi t4, t4, " + cb + "\n"
+        + _mv_reduce_pair[sew, lmul](a0, a1, dst, 1)
+        + _cfg(sew, lmul, chunk)
+        + "li t0, " + String(chunk) + "\n"
+        + "bltu t1, t0, " + String(label + 1) + "f\n"
+        + String(label) + ":\n"
+        + _vle[sew]() + " " + x + ", (t2)\n"
+        + _vle[sew]() + " " + w + ", (t3)\n"
+        + "vfmacc.vv v" + String(b0) + ", " + x + ", " + w + "\n"
+        + _vle[sew]() + " " + w + ", (t4)\n"
+        + "vfmacc.vv v" + String(b1) + ", " + x + ", " + w + "\n"
+        + "addi t1, t1, -" + String(chunk) + "\n"
+        + "addi t2, t2, " + cb + "\n"
+        + "addi t3, t3, " + cb + "\n"
+        + "addi t4, t4, " + cb + "\n"
+        + "bgeu t1, t0, " + String(label) + "b\n"
+        + String(label + 1) + ":\n"
+        + "beqz t1, " + String(label + 2) + "f\n"
+        + "vsetvli t0, t1, e" + String(sew) + ", m" + String(lmul)
+        + ", tu, ma\n"
+        + _vle[sew]() + " " + x + ", (t2)\n"
+        + _vle[sew]() + " " + w + ", (t3)\n"
+        + "vfmacc.vv v" + String(b0) + ", " + x + ", " + w + "\n"
+        + _vle[sew]() + " " + w + ", (t4)\n"
+        + "vfmacc.vv v" + String(b1) + ", " + x + ", " + w + "\n"
+        + "li t0, " + String(chunk) + "\n"
+        + "vsetvli zero, t0, e" + String(sew) + ", m" + String(lmul)
+        + ", ta, ma\n"
+        + String(label + 2) + ":\n"
+    )
+    body += _mv_store_pair[sew, lmul](dst)
+    body += "addi s2, s2, -2\n"
+    body += "beqz s2, 11f\n"
+    # mirrored half: A' compute, B reduce
+    body += "mv t2, s4\nmv t3, s3\nadd t4, t3, s6\nadd s3, t4, s6\n"
+    body += "mv t1, $2\n"
+    body += _mv_fold_pair[sew, lmul](b0, b1)
+    body += _mv_reduce_pair[sew, lmul](b0, b1, dst, 0)
+    body += _cfg(sew, lmul, chunk)
+    body += "li t0, " + String(chunk) + "\n"
+    body += (
+        _vle[sew]() + " " + x + ", (t2)\n"
+        + _vle[sew]() + " " + w + ", (t3)\n"
+        + "vfmul.vv v" + String(2 * lmul) + ", " + x + ", " + w + "\n"
+        + _vle[sew]() + " " + w + ", (t4)\n"
+        + "vfmul.vv v" + String(3 * lmul) + ", " + x + ", " + w + "\n"
+        + "addi t1, t1, -" + String(chunk) + "\n"
+        + "addi t2, t2, " + cb + "\n"
+        + "addi t3, t3, " + cb + "\n"
+        + "addi t4, t4, " + cb + "\n"
+        + _mv_reduce_pair[sew, lmul](b0, b1, dst, 1)
+        + _cfg(sew, lmul, chunk)
+        + "li t0, " + String(chunk) + "\n"
+        + "bltu t1, t0, " + String(label + 4) + "f\n"
+        + String(label + 3) + ":\n"
+        + _vle[sew]() + " " + x + ", (t2)\n"
+        + _vle[sew]() + " " + w + ", (t3)\n"
+        + "vfmacc.vv v" + String(2 * lmul) + ", " + x + ", " + w + "\n"
+        + _vle[sew]() + " " + w + ", (t4)\n"
+        + "vfmacc.vv v" + String(3 * lmul) + ", " + x + ", " + w + "\n"
+        + "addi t1, t1, -" + String(chunk) + "\n"
+        + "addi t2, t2, " + cb + "\n"
+        + "addi t3, t3, " + cb + "\n"
+        + "addi t4, t4, " + cb + "\n"
+        + "bgeu t1, t0, " + String(label + 3) + "b\n"
+        + String(label + 4) + ":\n"
+        + "beqz t1, " + String(label + 5) + "f\n"
+        + "vsetvli t0, t1, e" + String(sew) + ", m" + String(lmul)
+        + ", tu, ma\n"
+        + _vle[sew]() + " " + x + ", (t2)\n"
+        + _vle[sew]() + " " + w + ", (t3)\n"
+        + "vfmacc.vv v" + String(2 * lmul) + ", " + x + ", " + w + "\n"
+        + _vle[sew]() + " " + w + ", (t4)\n"
+        + "vfmacc.vv v" + String(3 * lmul) + ", " + x + ", " + w + "\n"
+        + "li t0, " + String(chunk) + "\n"
+        + "vsetvli zero, t0, e" + String(sew) + ", m" + String(lmul)
+        + ", ta, ma\n"
+        + String(label + 5) + ":\n"
+    )
+    body += _mv_store_pair[sew, lmul](dst)
+    body += "addi s2, s2, -2\n"
+    body += "bnez s2, 4b\n"
+    # epilogue: reduce A'
+    body += _mv_fold_pair[sew, lmul](2 * lmul, 3 * lmul)
+    body += _mv_reduce_pair[sew, lmul](2 * lmul, 3 * lmul, dst, 0)
+    body += _mv_reduce_pair[sew, lmul](2 * lmul, 3 * lmul, dst, 1)
+    body += (
+        "vsetivli zero, 2, e" + String(sew) + ", m1, tu, ma\n"
+        + "vslideup.vi v" + String(dst) + ", v" + String(dst + 1) + ", 1\n"
+        + _vse[sew]() + " v" + String(dst) + ", (s5)\n"
+        + "j 99f\n"
+        + "11:\n"
+    )
+    # epilogue: reduce B (last pair landed in the first half)
+    body += _mv_fold_pair[sew, lmul](b0, b1)
+    body += _mv_reduce_pair[sew, lmul](b0, b1, dst, 0)
+    body += _mv_reduce_pair[sew, lmul](b0, b1, dst, 1)
+    body += (
+        "vsetivli zero, 2, e" + String(sew) + ", m1, tu, ma\n"
+        + "vslideup.vi v" + String(dst) + ", v" + String(dst + 1) + ", 1\n"
+        + _vse[sew]() + " v" + String(dst) + ", (s5)\n"
+        + "99:\n"
+    )
+    return body
+
+
 @always_inline
 def _mv(w: F32Ptr, x: F32Ptr, n: Int, rows: Int, out_ptr: F32Ptr):
-    """All full 6-row groups of a row-major matvec in one asm block: the row
-    loop lives inside the asm (no per-group call glue), six m4 accumulators
-    share each x chunk load, the first chunk initializes accumulators with
-    `vfmul` (no zero-fill), full chunks run under a hoisted vl and the tail
-    is one `tu` chunk.  Contract: n >= 256, rows >= 6 (caller handles the
-    row remainder with `_mv1`)."""
+    """Software-pipelined matvec at the file-level MV_LMUL/SEW shape.
+    Contract: n >= VLMAX(MV_LMUL), rows % 4 == 0, rows >= 4."""
+    comptime assert MV_LMUL in (1, 2, 4), "matvec register budget is 6L+3"
+    comptime asm = StaticString(materialize[_mv_asm[SEW, MV_LMUL]()]())
     inlined_assembly[
-        """
-        mv s2, $3
-        mv s3, $0
-        mv s4, $1
-        mv s5, $4
-        slli s6, $2, 2
-        li s7, 6
-        li t0, 256
-        vsetvli zero, t0, e32, m4, ta, ma
-        4:
-        mv t2, s4
-        mv t3, s3
-        add t4, t3, s6
-        add t5, t4, s6
-        add t6, t5, s6
-        add a4, t6, s6
-        add a5, a4, s6
-        add s3, a5, s6
-        mv t1, $2
-        vle32.v v4, (t2)
-        vle32.v v0, (t3)
-        vfmul.vv v8, v4, v0
-        vle32.v v0, (t4)
-        vfmul.vv v12, v4, v0
-        vle32.v v0, (t5)
-        vfmul.vv v16, v4, v0
-        vle32.v v0, (t6)
-        vfmul.vv v20, v4, v0
-        vle32.v v0, (a4)
-        vfmul.vv v24, v4, v0
-        vle32.v v0, (a5)
-        vfmul.vv v28, v4, v0
-        addi t1, t1, -256
-        addi t2, t2, 1024
-        addi t3, t3, 1024
-        addi t4, t4, 1024
-        addi t5, t5, 1024
-        addi t6, t6, 1024
-        addi a4, a4, 1024
-        addi a5, a5, 1024
-        bltu t1, t0, 2f
-        1:
-        vle32.v v4, (t2)
-        vle32.v v0, (t3)
-        vfmacc.vv v8, v4, v0
-        vle32.v v0, (t4)
-        vfmacc.vv v12, v4, v0
-        vle32.v v0, (t5)
-        vfmacc.vv v16, v4, v0
-        vle32.v v0, (t6)
-        vfmacc.vv v20, v4, v0
-        vle32.v v0, (a4)
-        vfmacc.vv v24, v4, v0
-        vle32.v v0, (a5)
-        vfmacc.vv v28, v4, v0
-        addi t1, t1, -256
-        addi t2, t2, 1024
-        addi t3, t3, 1024
-        addi t4, t4, 1024
-        addi t5, t5, 1024
-        addi t6, t6, 1024
-        addi a4, a4, 1024
-        addi a5, a5, 1024
-        bgeu t1, t0, 1b
-        2:
-        beqz t1, 3f
-        vsetvli t0, t1, e32, m4, tu, ma
-        vle32.v v4, (t2)
-        vle32.v v0, (t3)
-        vfmacc.vv v8, v4, v0
-        vle32.v v0, (t4)
-        vfmacc.vv v12, v4, v0
-        vle32.v v0, (t5)
-        vfmacc.vv v16, v4, v0
-        vle32.v v0, (t6)
-        vfmacc.vv v20, v4, v0
-        vle32.v v0, (a4)
-        vfmacc.vv v24, v4, v0
-        vle32.v v0, (a5)
-        vfmacc.vv v28, v4, v0
-        li t0, 256
-        vsetvli zero, t0, e32, m4, ta, ma
-        3:
-        vmv.s.x v4, zero
-        li t0, 128
-        vsetvli zero, t0, e32, m2, ta, ma
-        vfadd.vv v8, v8, v10
-        vfadd.vv v12, v12, v14
-        vfadd.vv v16, v16, v18
-        vfadd.vv v20, v20, v22
-        vfadd.vv v24, v24, v26
-        vfadd.vv v28, v28, v30
-        li t0, 64
-        vsetvli zero, t0, e32, m1, ta, ma
-        vfadd.vv v8, v8, v9
-        vfadd.vv v12, v12, v13
-        vfadd.vv v16, v16, v17
-        vfadd.vv v20, v20, v21
-        vfadd.vv v24, v24, v25
-        vfadd.vv v28, v28, v29
-        vfredusum.vs v0, v8, v4
-        vfredusum.vs v1, v12, v4
-        vfredusum.vs v2, v16, v4
-        vfredusum.vs v3, v20, v4
-        vfredusum.vs v5, v24, v4
-        vfredusum.vs v6, v28, v4
-        vsetivli zero, 2, e32, m1, tu, ma
-        vslideup.vi v0, v1, 1
-        vsetivli zero, 3, e32, m1, tu, ma
-        vslideup.vi v0, v2, 2
-        vsetivli zero, 4, e32, m1, tu, ma
-        vslideup.vi v0, v3, 3
-        vsetivli zero, 5, e32, m1, tu, ma
-        vslideup.vi v0, v5, 4
-        vsetivli zero, 6, e32, m1, tu, ma
-        vslideup.vi v0, v6, 5
-        vse32.v v0, (s5)
-        li t0, 256
-        vsetvli zero, t0, e32, m4, ta, ma
-        addi s5, s5, 24
-        addi s2, s2, -6
-        bgeu s2, s7, 4b
-        """,
+        asm,
         NoneType,
         constraints="r,r,r,r,r," + _VCLOB2,
     ](w, x, n, rows, out_ptr)
 
 
+def _mv1_asm[sew: Int, lmul: Int]() -> String:
+    comptime chunk = _vlmax(sew, lmul)
+    comptime cb = String(chunk * sew // 8)
+    var body = (
+        "mv t1, $2\n"
+        + "mv t2, $1\n"
+        + "mv t3, $0\n"
+        + "li t0, " + String(chunk) + "\n"
+        + "vsetvli zero, t0, e" + String(sew) + ", m" + String(lmul)
+        + ", ta, ma\n"
+        + "vmv.s.x v1, zero\n"
+        + _vle[sew]() + " v" + String(lmul) + ", (t2)\n"
+        + _vle[sew]() + " v" + String(2 * lmul) + ", (t3)\n"
+        + "vfmul.vv v" + String(3 * lmul) + ", v" + String(lmul) + ", v"
+        + String(2 * lmul) + "\n"
+        + "addi t1, t1, -" + String(chunk) + "\n"
+        + "addi t2, t2, " + cb + "\n"
+        + "addi t3, t3, " + cb + "\n"
+        + "bltu t1, t0, 2f\n"
+        + "1:\n"
+        + _vle[sew]() + " v" + String(lmul) + ", (t2)\n"
+        + _vle[sew]() + " v" + String(2 * lmul) + ", (t3)\n"
+        + "vfmacc.vv v" + String(3 * lmul) + ", v" + String(lmul) + ", v"
+        + String(2 * lmul) + "\n"
+        + "addi t1, t1, -" + String(chunk) + "\n"
+        + "addi t2, t2, " + cb + "\n"
+        + "addi t3, t3, " + cb + "\n"
+        + "bgeu t1, t0, 1b\n"
+        + "2:\n"
+        + "beqz t1, 3f\n"
+        + "vsetvli t0, t1, e" + String(sew) + ", m" + String(lmul)
+        + ", tu, ma\n"
+        + _vle[sew]() + " v" + String(lmul) + ", (t2)\n"
+        + _vle[sew]() + " v" + String(2 * lmul) + ", (t3)\n"
+        + "vfmacc.vv v" + String(3 * lmul) + ", v" + String(lmul) + ", v"
+        + String(2 * lmul) + "\n"
+        + "3:\n"
+    )
+    var l = lmul // 2
+    var acc = 3 * lmul
+    while l >= 1:
+        body += _cfg(sew, l, _vlmax(sew, l))
+        body += (
+            "vfadd.vv v" + String(acc) + ", v" + String(acc) + ", v"
+            + String(acc + l) + "\n"
+        )
+        l //= 2
+    body += _cfg(sew, 1, _vlmax(sew, 1))
+    body += "vfredusum.vs v0, v" + String(acc) + ", v1\n"
+    body += "vfmv.f.s ft0, v0\n"
+    body += "fsw ft0, 0($3)\n"
+    return body
+
+
 @always_inline
 def _mv1(w: F32Ptr, x: F32Ptr, n: Int, out_ptr: F32Ptr):
-    """Single-row remainder of `_matvec`; same n >= 256 contract as `_mv4`."""
+    """Single-row matvec remainder; same n >= VLMAX contract as `_mv`."""
+    comptime asm = StaticString(materialize[_mv1_asm[SEW, MV_LMUL]()]())
     inlined_assembly[
-        """
-        mv t1, $2
-        mv t2, $1
-        mv t3, $0
-        li t0, 256
-        vsetvli zero, t0, e32, m4, ta, ma
-        vmv.s.x v1, zero
-        vle32.v v4, (t2)
-        vle32.v v24, (t3)
-        vfmul.vv v8, v4, v24
-        addi t1, t1, -256
-        addi t2, t2, 1024
-        addi t3, t3, 1024
-        bltu t1, t0, 2f
-        1:
-        vle32.v v4, (t2)
-        vle32.v v24, (t3)
-        vfmacc.vv v8, v4, v24
-        addi t1, t1, -256
-        addi t2, t2, 1024
-        addi t3, t3, 1024
-        bgeu t1, t0, 1b
-        2:
-        beqz t1, 3f
-        vsetvli t0, t1, e32, m4, tu, ma
-        vle32.v v4, (t2)
-        vle32.v v24, (t3)
-        vfmacc.vv v8, v4, v24
-        li t0, 256
-        vsetvli zero, t0, e32, m4, ta, ma
-        3:
-        li t0, 128
-        vsetvli zero, t0, e32, m2, ta, ma
-        vfadd.vv v8, v8, v10
-        li t0, 64
-        vsetvli zero, t0, e32, m1, ta, ma
-        vfadd.vv v8, v8, v9
-        vfredusum.vs v0, v8, v1
-        vfmv.f.s ft0, v0
-        fsw ft0, 0($3)
-        """,
+        asm,
         NoneType,
         constraints="r,r,r,r," + _VCLOB,
     ](w, x, n, out_ptr)
@@ -255,8 +442,8 @@ def _mv1(w: F32Ptr, x: F32Ptr, n: Int, out_ptr: F32Ptr):
 
 @always_inline
 def _matvec(out_ptr: F32Ptr, w: F32Ptr, x: F32Ptr, m: Int, n: Int):
-    """out[i] = dot(w[i, :], x) for a row-major w[m, n] (n >= 256)."""
-    var groups = m - m % 6
+    """out[i] = dot(w[i, :], x) for a row-major w[m, n] (n >= VLMAX)."""
+    var groups = m - m % 4
     if groups > 0:
         _mv(w, x, n, groups, out_ptr)
     var i = groups
@@ -265,35 +452,53 @@ def _matvec(out_ptr: F32Ptr, w: F32Ptr, x: F32Ptr, m: Int, n: Int):
         i += 1
 
 
-# dot(a[0..n), b[0..n)) for n <= 64 lanes (one m1 register at VLEN=2048).
+def _dot_asm[sew: Int, lmul: Int]() -> String:
+    return (
+        "vsetvli t0, $3, e" + String(sew) + ", m" + String(lmul)
+        + ", ta, ma\n"
+        + _vle[sew]() + " v8, ($1)\n"
+        + _vle[sew]() + " v" + String(8 + lmul) + ", ($2)\n"
+        + "vfmul.vv v8, v8, v" + String(8 + lmul) + "\n"
+        + "vmv.s.x v" + String(8 + 2 * lmul) + ", zero\n"
+        + "vfredusum.vs v" + String(8 + 2 * lmul) + ", v8, v"
+        + String(8 + 2 * lmul) + "\n"
+        + "vfmv.f.s $0, v" + String(8 + 2 * lmul) + "\n"
+    )
+
+
+# dot(a[0..n), b[0..n)) for n <= VLMAX(lmul).
 @always_inline
 def _dot(a: F32Ptr, b: F32Ptr, n: Int) -> Float32:
+    comptime asm = StaticString(materialize[_dot_asm[SEW, 1]()]())
     return inlined_assembly[
-        """
-        vsetvli t0, $3, e32, m1, ta, ma
-        vle32.v v8, ($1)
-        vle32.v v9, ($2)
-        vfmul.vv v8, v8, v9
-        vmv.s.x v10, zero
-        vfredusum.vs v10, v8, v10
-        vfmv.f.s $0, v10
-        """,
+        asm,
         Float32,
         constraints="=f,r,r,r," + _VCLOB,
     ](a, b, n)
 
 
-# acc[0..n) += a * v[0..n) for n <= 64.
+def _axpy_asm[sew: Int, lmul: Int](first: Bool) -> String:
+    var body = (
+        "vsetvli t0, $3, e" + String(sew) + ", m" + String(lmul)
+        + ", ta, ma\n"
+        + _vle[sew]() + " v8, ($1)\n"
+    )
+    if first:
+        body += "vfmul.vf v8, v8, $2\n"
+        body += _vse[sew]() + " v8, ($0)\n"
+    else:
+        body += _vle[sew]() + " v" + String(8 + lmul) + ", ($0)\n"
+        body += "vfmacc.vf v" + String(8 + lmul) + ", $2, v8\n"
+        body += _vse[sew]() + " v" + String(8 + lmul) + ", ($0)\n"
+    return body
+
+
+# acc[0..n) += a * v[0..n) for n <= VLMAX(lmul).
 @always_inline
 def _axpy(acc: F32Ptr, v: F32Ptr, a: Float32, n: Int):
+    comptime asm = StaticString(materialize[_axpy_asm[SEW, 1](False)]())
     inlined_assembly[
-        """
-        vsetvli t0, $3, e32, m1, ta, ma
-        vle32.v v8, ($1)
-        vle32.v v9, ($0)
-        vfmacc.vf v9, $2, v8
-        vse32.v v9, ($0)
-        """,
+        asm,
         NoneType,
         constraints="r,r,f,r," + _VCLOB,
     ](acc, v, a, n)
@@ -302,98 +507,120 @@ def _axpy(acc: F32Ptr, v: F32Ptr, a: Float32, n: Int):
 # acc[0..n) = a * v[0..n) (first position: no read, no zero-fill).
 @always_inline
 def _axpy_first(acc: F32Ptr, v: F32Ptr, a: Float32, n: Int):
+    comptime asm = StaticString(materialize[_axpy_asm[SEW, 1](True)]())
     inlined_assembly[
-        """
-        vsetvli t0, $3, e32, m1, ta, ma
-        vle32.v v8, ($1)
-        vfmul.vf v8, v8, $2
-        vse32.v v8, ($0)
-        """,
+        asm,
         NoneType,
         constraints="r,r,f,r," + _VCLOB,
     ](acc, v, a, n)
 
 
-# Strip-mined m8 sum of squares (unordered reduce).
+def _ssq_asm[sew: Int, lmul: Int]() -> String:
+    comptime chunk = _vlmax(sew, lmul)
+    var body = (
+        "li t0, " + String(chunk) + "\n"
+        + "vsetvli zero, t0, e" + String(sew) + ", m" + String(lmul)
+        + ", ta, ma\n"
+        + "vmv.v.i v8, 0\n"
+        + "mv t1, $2\n"
+        + "mv t2, $1\n"
+        + "1:\n"
+        + "vsetvli t0, t1, e" + String(sew) + ", m" + String(lmul)
+        + ", tu, ma\n"
+        + _vle[sew]() + " v" + String(8 + lmul) + ", (t2)\n"
+        + "vfmacc.vv v8, v" + String(8 + lmul) + ", v" + String(8 + lmul)
+        + "\n"
+        + "slli t0, t0, 2\n"
+        + "add t2, t2, t0\n"
+        + "srli t0, t0, 2\n"
+        + "sub t1, t1, t0\n"
+        + "bnez t1, 1b\n"
+    )
+    var l = lmul // 2
+    while l >= 1:
+        body += _cfg(sew, l, _vlmax(sew, l))
+        body += "vfadd.vv v8, v8, v" + String(8 + l) + "\n"
+        l //= 2
+    body += _cfg(sew, 1, _vlmax(sew, 1))
+    body += "vmv.s.x v0, zero\n"
+    body += "vfredusum.vs v0, v8, v0\n"
+    body += "vfmv.f.s $0, v0\n"
+    return body
+
+
+# Strip-mined sum of squares (unordered reduce) at EW_LMUL.
 @always_inline
 def _ssq(x: F32Ptr, n: Int) -> Float32:
+    comptime asm = StaticString(materialize[_ssq_asm[SEW, EW_LMUL]()]())
     return inlined_assembly[
-        """
-        li t0, 512
-        vsetvli zero, t0, e32, m8, ta, ma
-        vmv.v.i v8, 0
-        mv t1, $2
-        mv t2, $1
-        1:
-        vsetvli t0, t1, e32, m8, tu, ma
-        vle32.v v16, (t2)
-        vfmacc.vv v8, v16, v16
-        slli t0, t0, 2
-        add t2, t2, t0
-        srli t0, t0, 2
-        sub t1, t1, t0
-        bnez t1, 1b
-        li t0, 512
-        vsetvli zero, t0, e32, m8, ta, ma
-        vmv.s.x v0, zero
-        vfredusum.vs v0, v8, v0
-        vfmv.f.s $0, v0
-        """,
+        asm,
         Float32,
         constraints="=f,r,r," + _VCLOB,
     ](x, n)
 
 
-# out[j] = g[j] * (x[j] * inv), strip-mined m8.
+def _scale_asm[sew: Int, lmul: Int]() -> String:
+    return (
+        "mv t1, $4\n"
+        + "mv t2, $1\n"
+        + "mv t3, $2\n"
+        + "mv t4, $0\n"
+        + "1:\n"
+        + "vsetvli t0, t1, e" + String(sew) + ", m" + String(lmul)
+        + ", ta, ma\n"
+        + _vle[sew]() + " v8, (t2)\n"
+        + _vle[sew]() + " v" + String(8 + lmul) + ", (t3)\n"
+        + "vfmul.vf v8, v8, $3\n"
+        + "vfmul.vv v8, v8, v" + String(8 + lmul) + "\n"
+        + _vse[sew]() + " v8, (t4)\n"
+        + "slli t0, t0, 2\n"
+        + "add t2, t2, t0\n"
+        + "add t3, t3, t0\n"
+        + "add t4, t4, t0\n"
+        + "srli t0, t0, 2\n"
+        + "sub t1, t1, t0\n"
+        + "bnez t1, 1b\n"
+    )
+
+
+# out[j] = g[j] * (x[j] * inv), strip-mined at EW_LMUL.
 @always_inline
 def _scale(out_ptr: F32Ptr, x: F32Ptr, g: F32Ptr, inv: Float32, n: Int):
+    comptime asm = StaticString(materialize[_scale_asm[SEW, EW_LMUL]()]())
     inlined_assembly[
-        """
-        mv t1, $4
-        mv t2, $1
-        mv t3, $2
-        mv t4, $0
-        1:
-        vsetvli t0, t1, e32, m8, ta, ma
-        vle32.v v8, (t2)
-        vle32.v v16, (t3)
-        vfmul.vf v8, v8, $3
-        vfmul.vv v8, v8, v16
-        vse32.v v8, (t4)
-        slli t0, t0, 2
-        add t2, t2, t0
-        add t3, t3, t0
-        add t4, t4, t0
-        srli t0, t0, 2
-        sub t1, t1, t0
-        bnez t1, 1b
-        """,
+        asm,
         NoneType,
         constraints="r,r,r,f,r," + _VCLOB,
     ](out_ptr, x, g, inv, n)
 
 
-# x[i] += r[i], strip-mined m8.
+def _vadd_asm[sew: Int, lmul: Int]() -> String:
+    return (
+        "mv t1, $2\n"
+        + "mv t2, $0\n"
+        + "mv t3, $1\n"
+        + "1:\n"
+        + "vsetvli t0, t1, e" + String(sew) + ", m" + String(lmul)
+        + ", ta, ma\n"
+        + _vle[sew]() + " v8, (t2)\n"
+        + _vle[sew]() + " v" + String(8 + lmul) + ", (t3)\n"
+        + "vfadd.vv v8, v8, v" + String(8 + lmul) + "\n"
+        + _vse[sew]() + " v8, (t2)\n"
+        + "slli t0, t0, 2\n"
+        + "add t2, t2, t0\n"
+        + "add t3, t3, t0\n"
+        + "srli t0, t0, 2\n"
+        + "sub t1, t1, t0\n"
+        + "bnez t1, 1b\n"
+    )
+
+
+# x[i] += r[i], strip-mined at EW_LMUL.
 @always_inline
 def _vadd(x: F32Ptr, r: F32Ptr, n: Int):
+    comptime asm = StaticString(materialize[_vadd_asm[SEW, EW_LMUL]()]())
     inlined_assembly[
-        """
-        mv t1, $2
-        mv t2, $0
-        mv t3, $1
-        1:
-        vsetvli t0, t1, e32, m8, ta, ma
-        vle32.v v8, (t2)
-        vle32.v v16, (t3)
-        vfadd.vv v8, v8, v16
-        vse32.v v8, (t2)
-        slli t0, t0, 2
-        add t2, t2, t0
-        add t3, t3, t0
-        srli t0, t0, 2
-        sub t1, t1, t0
-        bnez t1, 1b
-        """,
+        asm,
         NoneType,
         constraints="r,r,r," + _VCLOB,
     ](x, r, n)
@@ -406,26 +633,30 @@ def _rmsnorm(out_ptr: F32Ptr, x: F32Ptr, g: F32Ptr, n: Int):
     _scale(out_ptr, x, g, inv, n)
 
 
-# Rotate one head's (even, odd) pairs by (cos, sin): segment loads split the
-# interleaved pairs, `rope` is interleaved (cos, sin) per pair.  hs/2 <= 32.
+def _rope_asm[sew: Int]() -> String:
+    return (
+        "srli t1, $2, 1\n"
+        + "vsetvli t0, t1, e" + String(sew) + ", m1, ta, ma\n"
+        + "vlseg2e" + String(sew) + ".v v8, ($1)\n"
+        + "vlseg2e" + String(sew) + ".v v10, ($0)\n"
+        + "vfmul.vv v12, v10, v8\n"
+        + "vfmul.vv v13, v11, v9\n"
+        + "vfsub.vv v12, v12, v13\n"
+        + "vfmul.vv v14, v10, v9\n"
+        + "vfmul.vv v15, v11, v8\n"
+        + "vfadd.vv v13, v14, v15\n"
+        + "vmv.v.v v10, v12\n"
+        + "vmv.v.v v11, v13\n"
+        + "vsseg2e" + String(sew) + ".v v10, ($0)\n"
+    )
+
+
+# Rotate one head's (even, odd) pairs by the interleaved (cos, sin) table.
 @always_inline
 def _rope_head(q: F32Ptr, rope: F32Ptr, hs: Int):
+    comptime asm = StaticString(materialize[_rope_asm[SEW]()]())
     inlined_assembly[
-        """
-        srli t1, $2, 1
-        vsetvli t0, t1, e32, m1, ta, ma
-        vlseg2e32.v v8, ($1)
-        vlseg2e32.v v10, ($0)
-        vfmul.vv v12, v10, v8
-        vfmul.vv v13, v11, v9
-        vfsub.vv v12, v12, v13
-        vfmul.vv v14, v10, v9
-        vfmul.vv v15, v11, v8
-        vfadd.vv v13, v14, v15
-        vmv.v.v v10, v12
-        vmv.v.v v11, v13
-        vsseg2e32.v v10, ($0)
-        """,
+        asm,
         NoneType,
         constraints="r,r,r," + _VCLOB,
     ](q, rope, hs)
