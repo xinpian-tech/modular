@@ -556,8 +556,9 @@ const char *AsyncRT_DeviceContext_create(const T1Context **result,
       free(ctx);
       return t1_err("T1RT: set T1RT_EMULATOR and T1RT_TRAMPOLINE");
     }
-    if (const char *err = read_file(ctx->trampoline_path, &ctx->trampoline,
-                                    &ctx->trampoline_len)) {
+    const char *err = read_file(ctx->trampoline_path, &ctx->trampoline,
+                                &ctx->trampoline_len);
+    if (err) {
       free(ctx);
       return err;
     }
@@ -773,8 +774,9 @@ const char *AsyncRT_DeviceContext_loadFunction(
   fn->elf = malloc(dataLen);
   fn->elf_len = dataLen;
   memcpy(fn->elf, data, dataLen);
-  if (const char *err =
-          elf_find_symbol(fn->elf, fn->elf_len, functionName, &fn->entry)) {
+  const char *err =
+      elf_find_symbol(fn->elf, fn->elf_len, functionName, &fn->entry);
+  if (err) {
     free(fn->elf);
     free(fn);
     return err;

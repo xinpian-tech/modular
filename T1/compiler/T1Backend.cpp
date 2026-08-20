@@ -13,14 +13,16 @@
 
 #include "T1Backend.h"
 
+#include "KGEN/Support/CustomDevicePlugin.h"
 #include "KGEN/Compiler/SaveAsmOutput.h"
 #include "KGEN/ToolCommon/CompilationOptions.h"
 #include "Support/Buffer.h"
 #include "Support/FileSystemExtras.h"
-#include "Target/T1/T1Traits.h"
+#include "T1Traits.h"
 #include "Target/TargetTraits.h"
 
 #include "mlir/IR/Location.h"
+#include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
@@ -41,6 +43,11 @@ namespace M::KGEN {
 static constexpr const char *t1TextBase = "0x80100000";
 
 const TargetTraits *T1Backend::traits() const { return &T1Traits::get(); }
+
+void T1Backend::emitBitcode(llvm::Module &module,
+                            llvm::raw_pwrite_stream &os) const {
+  llvm::WriteBitcodeToFile(module, os, /*ShouldPreserveUseListOrder=*/true);
+}
 
 CompilationOptions
 T1Backend::adjustOptionsForTargetMachine(const CompilationOptions &options,
@@ -176,11 +183,14 @@ T1Backend::createArchive(llvm::MutableArrayRef<BufferRef> objects,
   return Error("T1Backend::createArchive is not wired");
 }
 
-namespace {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wglobal-constructors"
-RegisterTargetBackend<T1Backend> registerT1Backend;
-#pragma GCC diagnostic pop
-} // namespace
-
 } // namespace M::KGEN
+
+// The plugin transfers its target implementations to the Mojo registries when
+// the generic loader invokes this entry point.
+extern "C" __attribute__((visibility("default"))) const char *
+M_KGEN_registerCustomDevicePlugin(
+    const M::KGEN::CustomDevicePluginRegistrar &registrar) {
+  registrar.addTraits(new M::KGEN::T1Traits());
+  registrar.addBackend(new M::KGEN::T1Backend());
+  return nullptr;
+}

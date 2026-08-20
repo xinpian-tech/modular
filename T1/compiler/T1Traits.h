@@ -11,8 +11,8 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
-#ifndef KGEN_TARGET_T1_T1TRAITS_H
-#define KGEN_TARGET_T1_T1TRAITS_H
+#ifndef T1_COMPILER_T1TRAITS_H
+#define T1_COMPILER_T1TRAITS_H
 
 #include "Target/TargetTraits.h"
 
@@ -56,4 +56,4 @@ protected:
 
 } // namespace M::KGEN
 
-#endif // KGEN_TARGET_T1_T1TRAITS_H
+#endif // T1_COMPILER_T1TRAITS_H

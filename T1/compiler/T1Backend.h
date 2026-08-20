@@ -18,8 +18,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef KGEN_COMPILER_TARGET_T1_T1BACKEND_H
-#define KGEN_COMPILER_TARGET_T1_T1BACKEND_H
+#ifndef T1_COMPILER_T1BACKEND_H
+#define T1_COMPILER_T1BACKEND_H
 
 #include "KGEN/Compiler/Target/TargetBackend.h"
 
@@ -37,6 +37,17 @@ public:
   }
 
   bool isOffload() const override { return true; }
+
+  bool isSharedMemoryGlobal(
+      const llvm::GlobalVariable &global) const override {
+    return false;
+  }
+
+  void addSanitizers(llvm::ModulePassManager &mpm,
+                     const CompilationOptions &options) const override {}
+
+  void emitBitcode(llvm::Module &module,
+                   llvm::raw_pwrite_stream &os) const override;
 
   /// Forces the soft-float calling convention (ilp32) while keeping hard
   /// float/vector *instructions* (the target features carry +f/+zve32f).
@@ -62,4 +73,4 @@ protected:
 
 } // namespace M::KGEN
 
-#endif // KGEN_COMPILER_TARGET_T1_T1BACKEND_H
+#endif // T1_COMPILER_T1BACKEND_H

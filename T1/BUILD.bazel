@@ -1,0 +1,34 @@
+load("//bazel:api.bzl", "modular_shared_library")
+
+package(default_visibility = ["//visibility:public"])
+
+modular_shared_library(
+    name = "compiler-plugin",
+    srcs = [
+        "compiler/T1Backend.cpp",
+        "compiler/T1Traits.cpp",
+    ],
+    hdrs = [
+        "compiler/T1Backend.h",
+        "compiler/T1Traits.h",
+        "compiler/t1_builtins.inc",
+    ],
+    includes = ["compiler"],
+    linkopts = select({
+        "@platforms//os:linux": ["-Wl,--allow-shlib-undefined"],
+        "//conditions:default": [],
+    }),
+    output_name = "T1CompilerPlugin",
+    deps = [
+        "//KGEN:Compiler.headers",
+        "//KGEN:CustomDevicePlugin.headers",
+        "//KGEN:TargetBackend.headers",
+        "//KGEN:TargetTraits.headers",
+        "//KGEN:ToolCommon.headers",
+        "//Support:Buffer",
+        "//Support:Filesystem",
+        "@llvm-project//llvm:Core",
+        "@llvm-project//llvm:BitWriter",
+        "@llvm-project//llvm:Support",
+    ],
+)

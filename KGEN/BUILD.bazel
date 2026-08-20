@@ -901,7 +901,10 @@ modular_cc_library(
         "//conditions:default": ["//MLRT:Driver/DeviceContextImplCpp"],
     }),
     tags = ["no-clang-tidy-headers"],
-    visibility = ["//visibility:private"],
+    visibility = [
+        "//KGEN:consumers",
+        "//KGEN:plugin_consumers",
+    ],
     deps = [
         ":KGENPassesIncGen",
         "//AsyncRT:Runtime",
@@ -913,6 +916,10 @@ modular_cc_library(
     name = "Compiler.headers",
     hdrs = glob(["include/KGEN/Compiler/*.h"]),
     tags = ["no-clang-tidy-headers"],
+    visibility = [
+        "//KGEN:consumers",
+        "//KGEN:plugin_consumers",
+    ],
     deps = [
         ":ExecutionEngine.headers",
     ],
@@ -1361,14 +1368,9 @@ modular_cc_library(
     name = "HostBackend",
     srcs = [
         "lib/Compiler/ObjectCompiler/Target/Host/HostBackend.cpp",
-        "lib/Compiler/ObjectCompiler/Target/T1/T1Backend.cpp",
         "lib/Compiler/ObjectCompiler/Target/TargetBackend.cpp",
     ],
-    hdrs = [
-        "lib/Compiler/ObjectCompiler/Target/Host/HostBackend.h",
-        "lib/Compiler/ObjectCompiler/Target/T1/T1Backend.h",
-        "lib/Compiler/ObjectCompiler/Target/T1/t1_builtins.inc",
-    ],
+    hdrs = ["lib/Compiler/ObjectCompiler/Target/Host/HostBackend.h"],
     strip_include_prefix = "lib/Compiler/ObjectCompiler",
     visibility = [
         "//KGEN:consumers",
@@ -1382,7 +1384,6 @@ modular_cc_library(
         ":ToolCommon.headers",
         "//Support:Buffer",
         "//Support:Configuration",
-        "//Support:Filesystem",
         "@llvm-project//llvm:BitWriter",
         "@llvm-project//llvm:Core",
         "@llvm-project//llvm:Instrumentation",
@@ -1411,9 +1412,6 @@ modular_cc_library(
             "lib/Compiler/ObjectCompiler/Target/TargetBackend.cpp",
             "lib/Compiler/ObjectCompiler/Target/Host/HostBackend.cpp",
             "lib/Compiler/ObjectCompiler/Target/Host/HostBackend.h",
-            "lib/Compiler/ObjectCompiler/Target/T1/T1Backend.cpp",
-            "lib/Compiler/ObjectCompiler/Target/T1/T1Backend.h",
-            "lib/Compiler/ObjectCompiler/Target/T1/t1_builtins.inc",
         ],
     ),
     data = [

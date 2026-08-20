@@ -11,7 +11,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
-#include "Target/T1/T1Traits.h"
+#include "T1Traits.h"
 
 namespace M::KGEN {
 
@@ -19,12 +19,5 @@ const T1Traits &T1Traits::get() {
   static const T1Traits instance;
   return instance;
 }
-
-namespace {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wglobal-constructors"
-RegisterTargetTraits<T1Traits> registerT1Traits;
-#pragma GCC diagnostic pop
-} // namespace
 
 } // namespace M::KGEN

@@ -17,6 +17,7 @@
 
 from max.gpu.host import DeviceContext
 from std.sys.info import simd_width_of
+from t1 import api, target
 
 
 def saxpy(
@@ -42,7 +43,7 @@ def main() raises:
     comptime n = 64
     var a = Float32(2.5)
 
-    var ctx = DeviceContext(api="t1")
+    var ctx = DeviceContext(api=api)
     print("device:", ctx.name(), "api:", ctx.api())
 
     var x = ctx.enqueue_create_buffer[DType.float32](n)
@@ -56,10 +57,13 @@ def main() raises:
         for i in range(n):
             hy[i] = Float32(100 + i)
 
+    var kernel = ctx.compile_function[saxpy, target=target()]()
+
     @__parameter
     @__copy_capture(x, y, out, a)
     def launch() raises:
-        ctx.enqueue_function[saxpy](
+        ctx.enqueue_function(
+            kernel,
             x, y, out, a, Int32(n), grid_dim=1, block_dim=1
         )
 

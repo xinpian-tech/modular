@@ -32,11 +32,12 @@ export T1RT_TRAMPOLINE=$PWD/out/trampoline.bin
 # 1. Pure C smoke (no Mojo): drive a compiler-produced kernel ELF.
 ./out/t1rt_smoke saxpy_t1.elf entry-symbol.txt
 
-# 2. Standard Mojo (see ../examples/saxpy.mojo):
+# 2. Mojo with the standalone T1 support package (see ../examples/saxpy.mojo):
+export MODULAR_MOJO_MAX_MOJO_PLUGIN_PATHS=/path/to/libT1CompilerPlugin.so
 export MODULAR_MOJO_MAX_SHARED_LIBS=$PWD/out/libT1RT.so
-mojo build --target-accelerator=t1 ../examples/saxpy.mojo -o saxpy
+mojo build -I ../mojo ../examples/saxpy.mojo -o saxpy
 ./saxpy
-# -> SAXPY OK on T1 (standard Mojo): n = 64 , kernel cycles = 131
+# -> SAXPY OK on T1 (standard Mojo): n = 64 , kernel cycles = ...
 ```
 
 `execution_time` returns **simulation cycles** on T1, not nanoseconds.

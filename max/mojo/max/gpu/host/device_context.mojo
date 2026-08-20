@@ -4269,8 +4269,9 @@ struct DeviceContext(ImplicitlyCopyable, RegisterPassable, _FunctionEnqueuer):
         //,
         func: def(* args: * declared_arg_types) thin -> None,
         *,
+        target: _TargetType = Self.default_device_info.target(),
         compile_options: StaticString = CompilationTarget[
-            Self.default_device_info.target()
+            target
         ].default_compile_options(),
         link_options: StaticString = "",
         dump_asm: _DumpPath = False,
@@ -4284,7 +4285,7 @@ struct DeviceContext(ImplicitlyCopyable, RegisterPassable, _FunctionEnqueuer):
         out result: DeviceFunction[
             func,
             declared_arg_types,
-            target=Self.default_device_info.target(),
+            target=target,
             compile_options=compile_options,
             link_options=link_options,
             _ptxas_info_verbose=_ptxas_info_verbose,
@@ -4295,6 +4296,8 @@ struct DeviceContext(ImplicitlyCopyable, RegisterPassable, _FunctionEnqueuer):
         Parameters:
             declared_arg_types: Types of the arguments to pass to the device function.
             func: The function to compile.
+            target: The compilation target. External device packages can pass
+                a target that is not part of the standard library.
             compile_options: Change the compile options to different options
                 than the ones associated with this `DeviceContext`.
             link_options: Additional linker flags and options as a string.
@@ -4346,8 +4349,9 @@ struct DeviceContext(ImplicitlyCopyable, RegisterPassable, _FunctionEnqueuer):
         //,
         func: def(* args: * declared_arg_types) capturing -> None,
         *,
+        target: _TargetType = Self.default_device_info.target(),
         compile_options: StaticString = CompilationTarget[
-            Self.default_device_info.target()
+            target
         ].default_compile_options(),
         link_options: StaticString = "",
         dump_asm: _DumpPath = False,
@@ -4361,7 +4365,7 @@ struct DeviceContext(ImplicitlyCopyable, RegisterPassable, _FunctionEnqueuer):
         out result: DeviceFunction[
             func,
             declared_arg_types,
-            target=Self.default_device_info.target(),
+            target=target,
             compile_options=compile_options,
             link_options=link_options,
             _ptxas_info_verbose=_ptxas_info_verbose,
@@ -4372,6 +4376,8 @@ struct DeviceContext(ImplicitlyCopyable, RegisterPassable, _FunctionEnqueuer):
         Parameters:
             declared_arg_types: Types of the arguments to pass to the device function.
             func: The function to compile.
+            target: The compilation target. External device packages can pass
+                a target that is not part of the standard library.
             compile_options: Change the compile options to different options
                 than the ones associated with this `DeviceContext`.
             link_options: Additional linker flags and options as a string.
