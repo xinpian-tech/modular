@@ -500,7 +500,35 @@ f-registers.
 4. **Deeper per-lane write queues** only if wide lanes are ever chosen
    (§12.1); at 4 x 64b it is not the constraint.
 
-## 15. Reproducing
+## 15. The execution-cadence ceiling (falsified fixes, and the real one)
+
+With the reduction-free kernel the remaining matvec cost is ~96 cycles
+per `vfmacc.vf` against 36 cycles of element work (3.2 e/cy sustained,
+40% of DLEN).  Three hypotheses were killed experimentally, each by a
+config or kernel variant with cycle-level measurement:
+
+| hypothesis | experiment | layer cycles | verdict |
+|---|---|---|---|
+| accumulator RAW chain | even/odd column striping into two independent accumulators | 342,954 | no effect |
+| VRF port contention | `p0rp1w` two-port + 8 banks | 342,808 | no effect |
+| shared float VFU | drop zvbb, `vfuInstantiateParameter=large` (per-slot float units) | 341,356 | no effect |
+
+What remains is the lane's documented slot-shift lockstep
+(`doc/en/DATAPATH.md`): instructions enqueue only into the last slot and
+all slots shift together only when slot 0 finishes, so back-to-back
+instructions of similar occupancy serialize at II ~ occupancy no matter
+how many functional units or ports exist.  At m=288 the kernel issues
+3,072 MACs x ~96 cy ~ 295k cycles of structural minimum; the measured
+341,281 is 87% of that bound (the rest is attention/rmsnorm/rope).
+
+Software has reached this machine's per-instruction cadence limit:
+the cumulative kernel journey is 3,343,155 -> 341,281 cycles (9.8x) on
+unchanged stock hardware.  The next factor belongs to RTL work, in
+order: decouple the slot shift (or allow out-of-order slot retirement),
+cut the ~45-cycle instruction startup, pipeline the reduction unit
+(still needed for attention at long context).
+
+## 16. Reproducing
 
 ```sh
 # run any workload on the RTL simulator with per-launch traces kept:

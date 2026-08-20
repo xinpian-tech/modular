@@ -238,13 +238,13 @@ def _mv_asm[sew: Int, lmul: Int]() -> String:
 
 def _mv_t_asm[sew: Int, lmul: Int]() -> String:
     """Reduction-free matvec over an offline-TRANSPOSED weight matrix
-    (wt[n][m], row-major): each output block accumulates every column via
-    a chained vfmacc.vf — no per-row init/fold/vfredusum/slide.  The
-    scalar x[c] is loaded one column AHEAD into alternating f-registers:
-    the T1 RTL does not interlock an flw writeback with a following
-    OPFVF's scalar capture (stale-fs1 hazard, found by this kernel), and
-    the software pipelining both hides the load and keeps >=4
-    instructions between each flw and its consumer.  Contract: n even.
+    (wt[n][m], row-major).  Even and odd columns accumulate into two
+    INDEPENDENT m8 accumulators (v8/v0) so the vfmacc RAW chain halves:
+    with one accumulator the measured initiation interval is ~96 cy per
+    column against ~36 cy of element work.  One vfadd merges the pair
+    before the block store.  Scalars are loaded one column ahead into
+    alternating f-registers (stale-fs1 workaround + latency hiding, see
+    xinpian-tech/T1#178).  Contract: n even.
     $0=wt, $1=x, $2=n (columns), $3=m (outputs), $4=out."""
     comptime shift = String(2 if sew == 32 else 1)
     comptime esz = String(sew // 8)
@@ -257,6 +257,7 @@ def _mv_t_asm[sew: Int, lmul: Int]() -> String:
         + "vsetvli t0, s2, e" + String(sew) + ", m" + String(lmul)
         + ", ta, ma\n"
         + "vmv.v.i v8, 0\n"
+        + "vmv.v.i v0, 0\n"
         + "mv t1, $2\n"
         + "mv t2, $1\n"
         + "mv t3, s3\n"
@@ -269,10 +270,11 @@ def _mv_t_asm[sew: Int, lmul: Int]() -> String:
         + _vle[sew]() + " v24, (t3)\n"
         + "flw ft0, " + String(2 * (sew // 8)) + "(t2)\n"
         + "add t3, t3, s6\n"
-        + "vfmacc.vf v8, ft1, v24\n"
+        + "vfmacc.vf v0, ft1, v24\n"
         + "addi t2, t2, " + String(2 * (sew // 8)) + "\n"
         + "addi t1, t1, -2\n"
         + "bnez t1, 2b\n"
+        + "vfadd.vv v8, v8, v0\n"
         + _vse[sew]() + " v8, (s5)\n"
         + "slli t0, t0, " + shift + "\n"
         + "add s5, s5, t0\n"
