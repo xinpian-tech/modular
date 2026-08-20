@@ -57,8 +57,11 @@ comptime I32Ptr = Pointer[Int32, MutAnyOrigin]
 #   comptime EW_LMUL = 8   # elementwise (rmsnorm/residual) strip width
 #
 # The matvec generator derives its whole register allocation from LMUL:
-# w buffer v0, x buffer v[L], double-buffered accumulator pairs A/B at
-# v[2L]..v[5L], reduce stubs at v[6L].. — 6L + 3 registers, so L in {1,2,4}.
+# w buffer v28, x buffer v[L], double-buffered accumulator pairs A/B at
+# v[2L]..v[5L], reduce stubs at v[6L].. — so L in {1,2,4}.  No kernel ever
+# writes v0: it is the RVV mask register, and on this machine a v0 write
+# serializes every dependent consumer (T1 issue #180) — dependent
+# accumulation measures II 35 on v8/v24 vs 89-140 on v0.
 # ===----------------------------------------------------------------------=== #
 
 comptime SEW = 32
@@ -113,7 +116,7 @@ def _mv_compute_pair[
     vsetvli-strip-mined `tu` loop — correct for any n (including n smaller
     than one chunk, which matters when VLEN is raised)."""
     comptime chunk = _vlmax(sew, lmul)
-    var w = "v0"
+    var w = "v28"
     var x = "v" + String(lmul)
     var a0 = "v" + String(acc0)
     var a1 = "v" + String(acc1)
@@ -193,7 +196,8 @@ def _mv_asm[sew: Int, lmul: Int]() -> String:
     """The software-pipelined matvec: a pair's fold and both vfredusum are
     issued immediately before the next pair's load stream, so the (slow,
     non-pipelined) reduce unit crunches while the LSU streams.  Register
-    plan derives from LMUL: w v0, x v[L], pair A v[2L]/v[3L], pair B
+    plan derives from LMUL: w v28 (v0 is the mask register — writing it
+    serializes dependent consumers, issue #180), x v[L], pair A v[2L]/v[3L], pair B
     v[4L]/v[5L], reduce stubs v[6L]..v[6L+2] — 6L+3 regs, LMUL in {1,2,4}."""
     comptime a0 = 2 * lmul
     comptime a1 = 3 * lmul
@@ -237,14 +241,17 @@ def _mv_asm[sew: Int, lmul: Int]() -> String:
 
 
 def _mv_t_asm[sew: Int, lmul: Int]() -> String:
-    """Reduction-free matvec over an offline-TRANSPOSED weight matrix
-    (wt[n][m], row-major).  Even and odd columns accumulate into two
-    INDEPENDENT m8 accumulators (v8/v0) so the vfmacc RAW chain halves:
-    with one accumulator the measured initiation interval is ~96 cy per
-    column against ~36 cy of element work.  One vfadd merges the pair
-    before the block store.  Scalars are loaded one column ahead into
-    alternating f-registers (stale-fs1 workaround + latency hiding, see
-    xinpian-tech/T1#178).  Contract: n even.
+    """Reduction-free matvec over an offline-TRANSPOSED weight matrix.
+    Register plan: single accumulator chain v8, double-buffered column
+    loads v16/v24.  v0 is never written: it is the RVV mask register and
+    a v0 write is classed "special" (pinned to the one shared sequencer
+    slot, admitted only when idle — T1 issue #180), serializing dependent
+    consumers at retirement cadence.  A single accumulator is enough
+    because dependent arithmetic chains on non-v0 registers do element
+    chain (measured II 35, same as independent streams); the former dual
+    accumulator was working around what was really the v0 penalty.
+    Scalars prefetch one column ahead in alternating f-registers
+    (stale-fs1 workaround, #178).  Contract: n even.
     $0=wt, $1=x, $2=n (columns), $3=m (outputs), $4=out."""
     comptime shift = String(2 if sew == 32 else 1)
     comptime esz = String(sew // 8)
@@ -257,7 +264,6 @@ def _mv_t_asm[sew: Int, lmul: Int]() -> String:
         + "vsetvli t0, s2, e" + String(sew) + ", m" + String(lmul)
         + ", ta, ma\n"
         + "vmv.v.i v8, 0\n"
-        + "vmv.v.i v0, 0\n"
         + "mv t1, $2\n"
         + "mv t2, $1\n"
         + "mv t3, s3\n"
@@ -270,11 +276,10 @@ def _mv_t_asm[sew: Int, lmul: Int]() -> String:
         + _vle[sew]() + " v24, (t3)\n"
         + "flw ft0, " + String(2 * (sew // 8)) + "(t2)\n"
         + "add t3, t3, s6\n"
-        + "vfmacc.vf v0, ft1, v24\n"
+        + "vfmacc.vf v8, ft1, v24\n"
         + "addi t2, t2, " + String(2 * (sew // 8)) + "\n"
         + "addi t1, t1, -2\n"
         + "bnez t1, 2b\n"
-        + "vfadd.vv v8, v8, v0\n"
         + _vse[sew]() + " v8, (s5)\n"
         + "slli t0, t0, " + shift + "\n"
         + "add s5, s5, t0\n"
@@ -318,7 +323,7 @@ def _mv1_asm[sew: Int, lmul: Int]() -> String:
         + "li t0, " + String(chunk) + "\n"
         + "vsetvli zero, t0, e" + String(sew) + ", m" + String(lmul)
         + ", ta, ma\n"
-        + "vmv.s.x v1, zero\n"
+        + "vmv.s.x v24, zero\n"
         + _vle[sew]() + " v" + String(lmul) + ", (t2)\n"
         + _vle[sew]() + " v" + String(2 * lmul) + ", (t3)\n"
         + "vfmul.vv v" + String(3 * lmul) + ", v" + String(lmul) + ", v"
@@ -356,8 +361,8 @@ def _mv1_asm[sew: Int, lmul: Int]() -> String:
         )
         l //= 2
     body += _cfg(sew, 1, _vlmax(sew, 1))
-    body += "vfredusum.vs v0, v" + String(acc) + ", v1\n"
-    body += "vfmv.f.s ft0, v0\n"
+    body += "vfredusum.vs v25, v" + String(acc) + ", v24\n"
+    body += "vfmv.f.s ft0, v25\n"
     body += "fsw ft0, 0($3)\n"
     return body
 
@@ -480,9 +485,9 @@ def _ssq_asm[sew: Int, lmul: Int]() -> String:
         body += "vfadd.vv v8, v8, v" + String(8 + l) + "\n"
         l //= 2
     body += _cfg(sew, 1, _vlmax(sew, 1))
-    body += "vmv.s.x v0, zero\n"
-    body += "vfredusum.vs v0, v8, v0\n"
-    body += "vfmv.f.s $0, v0\n"
+    body += "vmv.s.x v24, zero\n"
+    body += "vfredusum.vs v25, v8, v24\n"
+    body += "vfmv.f.s $0, v25\n"
     return body
 
 

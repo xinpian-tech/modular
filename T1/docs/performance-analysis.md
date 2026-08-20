@@ -560,7 +560,8 @@ what does not:
 | independent `vfadd.vv` m4 | 19 | 4 destination chains |
 | independent `vfadd.vv` m8 (vl=512, work 64 cy) | **38** | cross-slot overlap works |
 | independent `vfmacc.vf` m8 | **50** | MACs pipeline fine alone |
-| **dependent** `vfadd.vv` chain m8 | **89** | arith->arith has NO element-level chaining: full serialization |
+| **dependent** `vfadd.vv` chain m8, accumulator **v0** | **89-140** | not a chaining limit — the v0 penalty, see §17 |
+| **dependent** `vfadd.vv` chain m8, accumulator v8 or v24 | **35** | arith->arith *does* chain element-wise |
 | pure `vle32` m8 | 69 | ~2-deep, near beat rate |
 | `vle32`+`vfmacc.vf` interleaved 1:1 | 110/pair | the kernel's shape |
 | same instructions, 4+4 grouped | 58/pair | order matters in the micro... |
@@ -571,10 +572,13 @@ Answers to "why don't the MACs chain":
 1. **They do.**  Dependent load->MAC chaining works (that is how a MAC
    starts ~33 cy into its producer's stream), and independent MAC->MAC
    pipelining works (II 38-50 vs occupancy ~90).
-2. What does NOT exist is (a) element-level chaining between
-   **dependent arithmetic** instructions (II 89 ~ occupancy - the
-   consumer waits out the producer), and (b) more than ~2-deep overlap
-   in the lane pipelines.
+2. Dependent arithmetic chains too — **as long as the destination is
+   not v0** (II 35, indistinguishable from independent streams).  The
+   "no arith->arith chaining" reading in an earlier revision of this
+   table came from a microbenchmark that accumulated into v0; §17
+   dissects the real mechanism.  What remains is (b): the lane
+   pipelines never overlap a load with an arithmetic instruction, see
+   §18.
 3. At the layer's dimensions (m=288 -> vl=288, only 36 beats of data
    per load) both instructions of a column are **startup-dominated**
    (~47 cy fill each): two instructions at ~2-deep overlap give the
@@ -588,7 +592,106 @@ This closes the loop with §13: for short-vector GEMV the ~47-cycle
 per-instruction startup is not one bottleneck among several - it is the
 only remaining one, and it is a hardware number.
 
-## 17. Reproducing
+## 17. The v0 penalty: never use the mask register as data
+
+`v0` is architecturally an ordinary vector register that RVV *also*
+designates as the mask operand.  On T1 that dual role has a large,
+easily-tripped cost.  The discriminating experiment — one dependent
+accumulate chain, three destination registers, everything else identical:
+
+| dependent chain `vfadd.vv vX, vX, v16` (m8, vl=512) | II per instruction |
+|---|---|
+| vX = **v0** | **89-140** (~ occupancy: zero element overlap) |
+| vX = v8 | **35** |
+| vX = v24 | **35** |
+
+Independent streams measure 37-38, so a dependent chain on a normal
+register is already at the machine's streaming rate — chaining works.
+The mechanism behind the v0 column is in `t1zaozi/src/T1.scala`:
+`specialInstruction = decodeResult(Decoder.special) | requestReg.bits.vdIsV0`
+(L345-346), and specials are admitted only into the **single last**
+sequencer slot, and only when that slot is **idle** (L550, L883-884).
+Back-to-back v0 writers therefore serialize at retirement cadence: the
+consumer is not even dispatched to the lanes until the producer retires.
+
+Consequences for software, applied to every kernel in
+`T1/examples/t1llama.mojo`:
+
+- No hand-written kernel writes `v0`.  Accumulators live in v8/v16,
+  streaming buffers in v16/v24, reduction seeds and destinations in
+  v24/v25, the dot-product weight buffer in v28.
+- `vmv.v.i` is *not* free of this either: it encodes as `vmerge.vim`
+  with `vm=1`, and in a load-interleaved stream a `vle32`+`vmv.v.i`
+  pair costs **256 cy** against 112 for `vle32`+`vfadd.vv`.  Use it
+  only outside inner loops (the transposed matvec zeroes an
+  accumulator once per output strip, not per column).
+- The one legitimate v0 use — a mask produced by a compare — remains:
+  72 `vmflt.vf` out of 76,606 vector-register writes per token
+  (0.09%), from compiler-generated code, not from the kernels.
+
+Eliminating v0 from the kernels is **cycle-neutral on the layer**
+(341,281 before and after): in the transposed matvec the v0 writes were
+already hidden behind the load stream.  It removes a landmine — a
+schedule change that shortens the loads, or a machine with more memory
+bandwidth, would have made the penalty visible — and it makes the
+kernels immune regardless of how the hardware resolves
+[xinpian-tech/T1#180](https://github.com/xinpian-tech/T1/issues/180)
+(fix proposed in PR #181: drop `vdIsV0` from `specialInstruction`,
+which lifts the dependent-v0 chain from II 89.7 to 36.25).
+
+## 18. Loads and arithmetic never overlap: an in-flight-window wall
+
+The remaining structural limit is that a vector load and a vector ALU
+instruction do not overlap in steady state — **even when they are
+completely independent**:
+
+| stream (m8, vl=512) | II | aggregate VRF element-writes |
+|---|---|---|
+| `vle32` only | 69/instr | 7.4 elem/cy (AXI-bound: 2048 B / 69 cy = 29.7 B/cy of 32) |
+| `vfadd.vv` only, independent | 38/instr | 13.5 elem/cy |
+| `vle32` + 1 independent `vfadd.vv` | 112/pair | 9.1 elem/cy |
+| `vle32` + 2 independent `vfadd.vv` | 158/iter | 9.7 elem/cy |
+| `vle32` + 3 independent `vfadd.vv` | 207/iter | 9.9 elem/cy |
+| `vle32` + **dependent** `vfadd.vv` | 108/pair | — (same as independent!) |
+
+Each added arithmetic instruction costs its full standalone II (+46),
+and dependence changes nothing (112 vs 108) — so this is neither a
+chaining failure nor a read-port limit (a 1-read `vfadd.vf` and a
+2-read `vfadd.vv` cost the same 112).  Ideal overlap would give
+max(69, 38) = 69 per pair, i.e. **1.6x on every streaming kernel**,
+including this GEMV: the layer's 341,281 cycles are 3,072
+(load, MAC) pairs at 111 cy each, exactly the microbenchmark's pair
+cost, against a 69-cycle load-bandwidth floor of ~212,000.
+
+The retirement trace names the mechanism.  In the independent
+load+arith stream, writes *do* interleave (the `vfadd` writes
+500-607 while loads write 459-568 and 571-680), yet:
+
+```
+seq  inst     issue  firstW  lastW  retire  release
+  5  vle32      350     571    680     684      686
+  6  vfadd      462     500    607     685      687
+  7  vle32      463     683    792     796      798
+```
+
+**issue(N) == release(N-5)** for every instruction: at most five vector
+instructions are ever in flight (`chainingSize` = 4 slots + 1 in
+`requestReg`), while per-instruction latency is 225-336 cycles — of
+which 221 is the load waiting to start writing.  By Little's law,
+5 / 280 = one instruction per 56 cycles = the measured 112 per pair.
+The window, not the datapath, is the binding constraint: the mixed
+stream leaves 27% of the demonstrated VRF write rate (9.9 of 13.5
+elem/cy) unused.
+
+Two hardware directions follow, and they are testable rather than
+speculative: raise the window (`chainingSize` > 4, which elaborates
+only since [#176](https://github.com/xinpian-tech/T1/pull/176)), or cut
+the 221-cycle issue-to-first-write latency.  Note that the earlier §8
+result ("8-deep chaining does not help") was measured on a kernel whose
+own vtype ping-pong and scalar dependences kept it at 5 in flight
+anyway — it does not settle the question for streaming kernels.
+
+## 19. Reproducing
 
 ```sh
 # run any workload on the RTL simulator with per-launch traces kept:
