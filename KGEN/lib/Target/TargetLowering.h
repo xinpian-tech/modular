@@ -272,6 +272,9 @@ public:
 
   /// Registers a lowering, taking ownership.
   void add(std::unique_ptr<TargetLowering> lowering);
+  /// Registers a lowering supplied by a dynamic device plugin. Plugin
+  /// lowerings are considered before built-in lowerings during lookup.
+  void addPlugin(std::unique_ptr<TargetLowering> lowering);
   /// Returns the lowering for `triple` (never null on success). Errors when
   /// `triple` is an accelerator without MAX, or none is registered.
   ErrorOr<const TargetLowering *> lookup(const llvm::Triple &triple) const;
@@ -284,6 +287,7 @@ private:
   friend struct llvm::object_creator<TargetLoweringRegistry>;
 
   std::vector<std::unique_ptr<TargetLowering>> Targets;
+  size_t NumPluginTargets = 0;
 };
 
 /// Registers `LoweringT` at static-init, e.g.:

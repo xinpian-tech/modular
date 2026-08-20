@@ -38,6 +38,12 @@ void TargetLoweringRegistry::add(std::unique_ptr<TargetLowering> lowering) {
   Targets.push_back(std::move(lowering));
 }
 
+void TargetLoweringRegistry::addPlugin(
+    std::unique_ptr<TargetLowering> lowering) {
+  Targets.insert(Targets.begin() + NumPluginTargets, std::move(lowering));
+  ++NumPluginTargets;
+}
+
 ErrorOr<const TargetLowering *>
 TargetLoweringRegistry::lookup(const llvm::Triple &triple) const {
   // A lowering that resolves `triple` to one it owns takes precedence over a

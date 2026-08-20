@@ -286,6 +286,10 @@ public:
   /// Registers a backend, taking ownership.
   void add(std::unique_ptr<TargetBackend> backend);
 
+  /// Registers a backend supplied by a dynamic device plugin. Plugin backends
+  /// are considered before built-in backends during lookup.
+  void addPlugin(std::unique_ptr<TargetBackend> backend);
+
   /// Returns the backend for `triple` (never null on success).
   ErrorOr<const TargetBackend *> lookup(const llvm::Triple &triple) const;
   llvm::ArrayRef<std::unique_ptr<TargetBackend>> backends() const {
@@ -297,6 +301,7 @@ private:
   friend struct llvm::object_creator<TargetBackendRegistry>;
 
   std::vector<std::unique_ptr<TargetBackend>> Backends;
+  size_t NumPluginBackends = 0;
 };
 
 /// Registers `BackendT` at static-init, e.g.:

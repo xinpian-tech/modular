@@ -1,0 +1,25 @@
+load("//bazel:api.bzl", "lit_tests", "modular_shared_library")
+
+package(default_visibility = ["//visibility:private"])
+
+modular_shared_library(
+    name = "test-device-plugin",
+    testonly = True,
+    srcs = ["TestDevicePlugin.cpp"],
+    output_name = "TestCustomDevicePlugin",
+    deps = [
+        "//KGEN:CustomDevicePlugin.headers",
+        "//KGEN:TargetTraits.headers",
+        "//Support:SymbolExport",
+    ],
+)
+
+lit_tests(
+    name = "custom-device-plugin",
+    srcs = ["device-plugin.test"],
+    custom_substitutions = {
+        "%device-plugin": "$(rlocationpath :test-device-plugin)",
+    },
+    data = [":test-device-plugin"],
+    tools = ["//KGEN/tools/mojo"],
+)

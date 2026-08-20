@@ -50,6 +50,11 @@ void TargetTraitsRegistry::add(std::unique_ptr<TargetTraits> traits) {
   Targets.push_back(std::move(traits));
 }
 
+void TargetTraitsRegistry::addPlugin(std::unique_ptr<TargetTraits> traits) {
+  Targets.insert(Targets.begin() + NumPluginTargets, std::move(traits));
+  ++NumPluginTargets;
+}
+
 ErrorOr<const TargetTraits *>
 TargetTraitsRegistry::lookup(const llvm::Triple &triple) const {
   // A traits object that resolves `triple` to one it owns takes precedence over

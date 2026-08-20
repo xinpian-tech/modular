@@ -24,6 +24,7 @@
 #include "KGEN/Support/CLOptionUtils.h"
 #include "KGEN/Support/Configuration.h"
 #include "KGEN/Support/Constants.h"
+#include "KGEN/Support/CustomDevicePlugin.h"
 #include "KGEN/Support/ForceLinkMLIRC.h"
 #include "KGEN/ToolCommon/OOMHandler.h"
 #include "Support/Configuration.h"
@@ -73,6 +74,11 @@ int main(int argc, char **argv) {
   // Install LLVM signal handlers and convert `argc` and `argv` for Windows
   // hosts.
   llvm::InitLLVM initLLVM(argc, argv);
+
+  if (ErrorOrSuccess error = KGEN::loadCustomDevicePlugins()) {
+    llvm::errs() << "mojo: error: " << error.getError() << '\n';
+    return EXIT_FAILURE;
+  }
 
   KGEN::installOOMHandler();
 
