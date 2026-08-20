@@ -253,7 +253,51 @@ ladder outweigh the doubled loop-iteration count; LMUL=1 loses to pure
 per-iteration overhead.  The generator makes such sweeps a rebuild flag
 instead of an assembly rewrite.
 
-## 10. Reproducing
+## 10. Raising the chime (VLEN/DLEN): measured, and it hurts
+
+With DLEN fixed at 256, VLEN raised 2048 -> 4096 doubles the chime (the
+cycles one vector instruction occupies: chunk/8 for e32).  The kernel
+generator only needs `-D T1_VLEN=4096`; the RTL config changes
+`vlen`/`zvl4096b` in `designs/blastoise.toml`.  Layer kernel, identical
+(any-n-safe) generator everywhere, outputs token-exact in all cells:
+
+| VLEN | MV_LMUL | chunk | chime/instr | layer cycles |
+|---|---|---|---|---|
+| 2048 | 2 | 128 | 16 cy | **817,844** |
+| 2048 | 4 | 256 | 32 cy | 1,019,522 |
+| 4096 | 2 | 256 | 32 cy | 1,047,535 |
+| 4096 | 4 | 512 | 64 cy | 1,480,733 |
+
+Monotonically worse with chime, -81% at the extreme.  Three mechanisms,
+all visible in the earlier traces:
+
+1. The m1 reduce stub scales with VLEN (64 -> 128 e32 lanes), so
+   `vfredusum` (~126 + 1.25/elem, serial) costs 206 -> 286 cycles per
+   row — and reductions are already the critical resource.
+2. The fold ladder and accumulator init run at the VLMAX of each level
+   regardless of how many lanes are useful; at n=288 a 512-lane chunk
+   pays full-width occupancies for 288 lanes of work.
+3. The overhead that longer vectors classically amortize — scalar loop
+   control per instruction — was already free: chaining and the
+   decoupled scalar core hide it at chime 8-16 (§3).
+
+The matched-chunk cells make the reduce effect clean: VLEN 2048/LMUL 4
+and VLEN 4096/LMUL 2 execute the same chunk length and differ mainly in
+stub length (64 vs 128), costing ~3%.
+
+Corollary for blastoise-class configs: with a serial reduction unit and
+short GEMV rows, extra VLEN is pure downside for this workload family —
+spend the VRF area on reduction throughput instead.  (Long-vector
+workloads without reductions — SAXPY-like streaming — are where higher
+chime pays.)
+
+Note: this section uses the any-n-safe generator (accumulator zero-init
++ uniformly strip-mined `tu` loop), required once chunk can exceed the
+smallest matvec n.  It costs ~9% versus §9's vfmul-first-chunk variant
+at VLEN 2048 (817,844 vs 751,127 at LMUL 2); a comptime fast path for
+callers that guarantee n >= chunk is the obvious follow-up.
+
+## 11. Reproducing
 
 ```sh
 # run any workload on the RTL simulator with per-launch traces kept:

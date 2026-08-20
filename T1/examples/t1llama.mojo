@@ -62,8 +62,10 @@ comptime I32Ptr = Pointer[Int32, MutAnyOrigin]
 # ===----------------------------------------------------------------------=== #
 
 comptime SEW = 32
-comptime VLEN = 2048
-comptime MV_LMUL = get_defined_int["T1_MV_LMUL", 4]()
+# Must match the hardware VLEN: the generated `vsetvli`s request exact
+# VLMAX chunk lengths and assume they are granted in full.
+comptime VLEN = get_defined_int["T1_VLEN", 2048]()
+comptime MV_LMUL = get_defined_int["T1_MV_LMUL", 2]()
 comptime EW_LMUL = get_defined_int["T1_EW_LMUL", 8]()
 
 comptime _VCLOB2 = (
@@ -106,43 +108,24 @@ def _cfg(sew: Int, lmul: Int, vl: Int) -> String:
 def _mv_compute_pair[
     sew: Int, lmul: Int
 ](acc0: Int, acc1: Int, label: Int) -> String:
-    """One 2-row pair of the matvec: pointer setup, first chunk via vfmul
-    (accumulator init for free), full chunks under a hoisted vl, `tu` tail."""
+    """One 2-row pair of the matvec: zero-init accumulators, then a single
+    vsetvli-strip-mined `tu` loop — correct for any n (including n smaller
+    than one chunk, which matters when VLEN is raised)."""
     comptime chunk = _vlmax(sew, lmul)
-    comptime cb = String(chunk * sew // 8)
     var w = "v0"
     var x = "v" + String(lmul)
     var a0 = "v" + String(acc0)
     var a1 = "v" + String(acc1)
-    var body = (
+    return (
         "mv t2, s4\n"
         + "mv t3, s3\n"
         + "add t4, t3, s6\n"
         + "add s3, t4, s6\n"
         + "mv t1, $2\n"
-        + _vle[sew]() + " " + x + ", (t2)\n"
-        + _vle[sew]() + " " + w + ", (t3)\n"
-        + "vfmul.vv " + a0 + ", " + x + ", " + w + "\n"
-        + _vle[sew]() + " " + w + ", (t4)\n"
-        + "vfmul.vv " + a1 + ", " + x + ", " + w + "\n"
-        + "addi t1, t1, -" + String(chunk) + "\n"
-        + "addi t2, t2, " + cb + "\n"
-        + "addi t3, t3, " + cb + "\n"
-        + "addi t4, t4, " + cb + "\n"
-        + "bltu t1, t0, " + String(label + 1) + "f\n"
+        + _cfg(sew, lmul, chunk)
+        + "vmv.v.i " + a0 + ", 0\n"
+        + "vmv.v.i " + a1 + ", 0\n"
         + String(label) + ":\n"
-        + _vle[sew]() + " " + x + ", (t2)\n"
-        + _vle[sew]() + " " + w + ", (t3)\n"
-        + "vfmacc.vv " + a0 + ", " + x + ", " + w + "\n"
-        + _vle[sew]() + " " + w + ", (t4)\n"
-        + "vfmacc.vv " + a1 + ", " + x + ", " + w + "\n"
-        + "addi t1, t1, -" + String(chunk) + "\n"
-        + "addi t2, t2, " + cb + "\n"
-        + "addi t3, t3, " + cb + "\n"
-        + "addi t4, t4, " + cb + "\n"
-        + "bgeu t1, t0, " + String(label) + "b\n"
-        + String(label + 1) + ":\n"
-        + "beqz t1, " + String(label + 2) + "f\n"
         + "vsetvli t0, t1, e" + String(sew) + ", m" + String(lmul)
         + ", tu, ma\n"
         + _vle[sew]() + " " + x + ", (t2)\n"
@@ -150,17 +133,19 @@ def _mv_compute_pair[
         + "vfmacc.vv " + a0 + ", " + x + ", " + w + "\n"
         + _vle[sew]() + " " + w + ", (t4)\n"
         + "vfmacc.vv " + a1 + ", " + x + ", " + w + "\n"
-        + "li t0, " + String(chunk) + "\n"
-        + "vsetvli zero, t0, e" + String(sew) + ", m" + String(lmul)
-        + ", ta, ma\n"
-        + String(label + 2) + ":\n"
+        + "slli t0, t0, " + String(2 if sew == 32 else 1) + "\n"
+        + "add t2, t2, t0\n"
+        + "add t3, t3, t0\n"
+        + "add t4, t4, t0\n"
+        + "srli t0, t0, " + String(2 if sew == 32 else 1) + "\n"
+        + "sub t1, t1, t0\n"
+        + "bnez t1, " + String(label) + "b\n"
     )
-    return body
 
 
 def _mv_fold_pair[sew: Int, lmul: Int](acc0: Int, acc1: Int) -> String:
-    """log2(LMUL) lane-parallel vfadd stages: fold both accumulators of a
-    pair down to one m1 register each (the reduce stub)."""
+    """log2(LMUL) lane-parallel vfadd stages folding both accumulators of a
+    pair to one m1 register each."""
     var body = String("")
     var l = lmul // 2
     while l >= 1:
@@ -179,36 +164,36 @@ def _mv_fold_pair[sew: Int, lmul: Int](acc0: Int, acc1: Int) -> String:
 
 def _mv_reduce_pair[
     sew: Int, lmul: Int
-](acc0: Int, acc1: Int, dest: Int, which: Int) -> String:
-    """One unordered vfredusum of a folded m1 stub into dest / dest+1."""
+](acc0: Int, acc1: Int, dest: Int) -> String:
+    """Both unordered reduces of a folded pair, issued back-to-back so they
+    run on the reduce unit while the next pair's loads stream."""
     var body = _cfg(sew, 1, _vlmax(sew, 1))
     body += (
-        "vfredusum.vs v" + String(dest + which) + ", v"
-        + String(acc0 if which == 0 else acc1) + ", v" + String(dest + 2)
-        + "\n"
+        "vfredusum.vs v" + String(dest) + ", v" + String(acc0)
+        + ", v" + String(dest + 2) + "\n"
+    )
+    body += (
+        "vfredusum.vs v" + String(dest + 1) + ", v" + String(acc1)
+        + ", v" + String(dest + 2) + "\n"
     )
     return body
 
 
-def _mv_store_pair[sew: Int, lmul: Int](dest: Int) -> String:
-    comptime chunk = _vlmax(sew, lmul)
+def _mv_store_pair[sew: Int](dest: Int) -> String:
     return (
         "vsetivli zero, 2, e" + String(sew) + ", m1, tu, ma\n"
         + "vslideup.vi v" + String(dest) + ", v" + String(dest + 1) + ", 1\n"
         + _vse[sew]() + " v" + String(dest) + ", (s5)\n"
         + "addi s5, s5, " + String(2 * sew // 8) + "\n"
-        + "li t0, " + String(chunk) + "\n"
-        + "vsetvli zero, t0, e" + String(sew) + ", m" + String(lmul)
-        + ", ta, ma\n"
     )
 
 
 def _mv_asm[sew: Int, lmul: Int]() -> String:
-    """The full software-pipelined matvec: pair B's load stream issues
-    interleaved with pair A's fold/vfredusum, double-buffered so the load
-    buffers (v0, v[L]) and reduce registers never collide with the busy
-    accumulators.  Register budget 6L+3 => LMUL in {1, 2, 4}."""
-    comptime chunk = _vlmax(sew, lmul)
+    """The software-pipelined matvec: a pair's fold and both vfredusum are
+    issued immediately before the next pair's load stream, so the (slow,
+    non-pipelined) reduce unit crunches while the LSU streams.  Register
+    plan derives from LMUL: w v0, x v[L], pair A v[2L]/v[3L], pair B
+    v[4L]/v[5L], reduce stubs v[6L]..v[6L+2] — 6L+3 regs, LMUL in {1,2,4}."""
     comptime a0 = 2 * lmul
     comptime a1 = 3 * lmul
     comptime b0 = 4 * lmul
@@ -220,145 +205,33 @@ def _mv_asm[sew: Int, lmul: Int]() -> String:
         + "mv s4, $1\n"
         + "mv s5, $4\n"
         + "slli s6, $2, " + String(2 if sew == 32 else 1) + "\n"
-        + "li t0, " + String(chunk) + "\n"
-        + "vsetvli zero, t0, e" + String(sew) + ", m" + String(lmul)
-        + ", ta, ma\n"
+        + _cfg(sew, 1, 1)
         + "vmv.s.x v" + String(dst + 2) + ", zero\n"
     )
     body += _mv_compute_pair[sew, lmul](a0, a1, 1)
     body += "addi s2, s2, -2\n"
     body += "4:\n"
-    # pair B compute interleaved with pair A fold/reduce
-    body += "mv t2, s4\nmv t3, s3\nadd t4, t3, s6\nadd s3, t4, s6\n"
-    body += "mv t1, $2\n"
     body += _mv_fold_pair[sew, lmul](a0, a1)
-    body += _mv_reduce_pair[sew, lmul](a0, a1, dst, 0)
-    body += _cfg(sew, lmul, chunk)
-    body += "li t0, " + String(chunk) + "\n"
-    body += _mv_compute_body_swap[sew, lmul](b0, b1, a0, a1, dst, 5)
-    return body
-
-
-def _mv_compute_body_swap[
-    sew: Int, lmul: Int
-](b0: Int, b1: Int, a0: Int, a1: Int, dst: Int, label: Int) -> String:
-    """Second half of the steady loop plus the mirrored half and epilogues."""
-    comptime chunk = _vlmax(sew, lmul)
-    comptime cb = String(chunk * sew // 8)
-    var w = "v0"
-    var x = "v" + String(lmul)
-    var body = (
-        _vle[sew]() + " " + x + ", (t2)\n"
-        + _vle[sew]() + " " + w + ", (t3)\n"
-        + "vfmul.vv v" + String(b0) + ", " + x + ", " + w + "\n"
-        + _vle[sew]() + " " + w + ", (t4)\n"
-        + "vfmul.vv v" + String(b1) + ", " + x + ", " + w + "\n"
-        + "addi t1, t1, -" + String(chunk) + "\n"
-        + "addi t2, t2, " + cb + "\n"
-        + "addi t3, t3, " + cb + "\n"
-        + "addi t4, t4, " + cb + "\n"
-        + _mv_reduce_pair[sew, lmul](a0, a1, dst, 1)
-        + _cfg(sew, lmul, chunk)
-        + "li t0, " + String(chunk) + "\n"
-        + "bltu t1, t0, " + String(label + 1) + "f\n"
-        + String(label) + ":\n"
-        + _vle[sew]() + " " + x + ", (t2)\n"
-        + _vle[sew]() + " " + w + ", (t3)\n"
-        + "vfmacc.vv v" + String(b0) + ", " + x + ", " + w + "\n"
-        + _vle[sew]() + " " + w + ", (t4)\n"
-        + "vfmacc.vv v" + String(b1) + ", " + x + ", " + w + "\n"
-        + "addi t1, t1, -" + String(chunk) + "\n"
-        + "addi t2, t2, " + cb + "\n"
-        + "addi t3, t3, " + cb + "\n"
-        + "addi t4, t4, " + cb + "\n"
-        + "bgeu t1, t0, " + String(label) + "b\n"
-        + String(label + 1) + ":\n"
-        + "beqz t1, " + String(label + 2) + "f\n"
-        + "vsetvli t0, t1, e" + String(sew) + ", m" + String(lmul)
-        + ", tu, ma\n"
-        + _vle[sew]() + " " + x + ", (t2)\n"
-        + _vle[sew]() + " " + w + ", (t3)\n"
-        + "vfmacc.vv v" + String(b0) + ", " + x + ", " + w + "\n"
-        + _vle[sew]() + " " + w + ", (t4)\n"
-        + "vfmacc.vv v" + String(b1) + ", " + x + ", " + w + "\n"
-        + "li t0, " + String(chunk) + "\n"
-        + "vsetvli zero, t0, e" + String(sew) + ", m" + String(lmul)
-        + ", ta, ma\n"
-        + String(label + 2) + ":\n"
-    )
-    body += _mv_store_pair[sew, lmul](dst)
+    body += _mv_reduce_pair[sew, lmul](a0, a1, dst)
+    body += _mv_compute_pair[sew, lmul](b0, b1, 5)
+    body += _mv_store_pair[sew](dst)
     body += "addi s2, s2, -2\n"
     body += "beqz s2, 11f\n"
-    # mirrored half: A' compute, B reduce
-    body += "mv t2, s4\nmv t3, s3\nadd t4, t3, s6\nadd s3, t4, s6\n"
-    body += "mv t1, $2\n"
     body += _mv_fold_pair[sew, lmul](b0, b1)
-    body += _mv_reduce_pair[sew, lmul](b0, b1, dst, 0)
-    body += _cfg(sew, lmul, chunk)
-    body += "li t0, " + String(chunk) + "\n"
-    body += (
-        _vle[sew]() + " " + x + ", (t2)\n"
-        + _vle[sew]() + " " + w + ", (t3)\n"
-        + "vfmul.vv v" + String(2 * lmul) + ", " + x + ", " + w + "\n"
-        + _vle[sew]() + " " + w + ", (t4)\n"
-        + "vfmul.vv v" + String(3 * lmul) + ", " + x + ", " + w + "\n"
-        + "addi t1, t1, -" + String(chunk) + "\n"
-        + "addi t2, t2, " + cb + "\n"
-        + "addi t3, t3, " + cb + "\n"
-        + "addi t4, t4, " + cb + "\n"
-        + _mv_reduce_pair[sew, lmul](b0, b1, dst, 1)
-        + _cfg(sew, lmul, chunk)
-        + "li t0, " + String(chunk) + "\n"
-        + "bltu t1, t0, " + String(label + 4) + "f\n"
-        + String(label + 3) + ":\n"
-        + _vle[sew]() + " " + x + ", (t2)\n"
-        + _vle[sew]() + " " + w + ", (t3)\n"
-        + "vfmacc.vv v" + String(2 * lmul) + ", " + x + ", " + w + "\n"
-        + _vle[sew]() + " " + w + ", (t4)\n"
-        + "vfmacc.vv v" + String(3 * lmul) + ", " + x + ", " + w + "\n"
-        + "addi t1, t1, -" + String(chunk) + "\n"
-        + "addi t2, t2, " + cb + "\n"
-        + "addi t3, t3, " + cb + "\n"
-        + "addi t4, t4, " + cb + "\n"
-        + "bgeu t1, t0, " + String(label + 3) + "b\n"
-        + String(label + 4) + ":\n"
-        + "beqz t1, " + String(label + 5) + "f\n"
-        + "vsetvli t0, t1, e" + String(sew) + ", m" + String(lmul)
-        + ", tu, ma\n"
-        + _vle[sew]() + " " + x + ", (t2)\n"
-        + _vle[sew]() + " " + w + ", (t3)\n"
-        + "vfmacc.vv v" + String(2 * lmul) + ", " + x + ", " + w + "\n"
-        + _vle[sew]() + " " + w + ", (t4)\n"
-        + "vfmacc.vv v" + String(3 * lmul) + ", " + x + ", " + w + "\n"
-        + "li t0, " + String(chunk) + "\n"
-        + "vsetvli zero, t0, e" + String(sew) + ", m" + String(lmul)
-        + ", ta, ma\n"
-        + String(label + 5) + ":\n"
-    )
-    body += _mv_store_pair[sew, lmul](dst)
+    body += _mv_reduce_pair[sew, lmul](b0, b1, dst)
+    body += _mv_compute_pair[sew, lmul](a0, a1, 7)
+    body += _mv_store_pair[sew](dst)
     body += "addi s2, s2, -2\n"
     body += "bnez s2, 4b\n"
-    # epilogue: reduce A'
-    body += _mv_fold_pair[sew, lmul](2 * lmul, 3 * lmul)
-    body += _mv_reduce_pair[sew, lmul](2 * lmul, 3 * lmul, dst, 0)
-    body += _mv_reduce_pair[sew, lmul](2 * lmul, 3 * lmul, dst, 1)
-    body += (
-        "vsetivli zero, 2, e" + String(sew) + ", m1, tu, ma\n"
-        + "vslideup.vi v" + String(dst) + ", v" + String(dst + 1) + ", 1\n"
-        + _vse[sew]() + " v" + String(dst) + ", (s5)\n"
-        + "j 99f\n"
-        + "11:\n"
-    )
-    # epilogue: reduce B (last pair landed in the first half)
+    body += _mv_fold_pair[sew, lmul](a0, a1)
+    body += _mv_reduce_pair[sew, lmul](a0, a1, dst)
+    body += _mv_store_pair[sew](dst)
+    body += "j 99f\n"
+    body += "11:\n"
     body += _mv_fold_pair[sew, lmul](b0, b1)
-    body += _mv_reduce_pair[sew, lmul](b0, b1, dst, 0)
-    body += _mv_reduce_pair[sew, lmul](b0, b1, dst, 1)
-    body += (
-        "vsetivli zero, 2, e" + String(sew) + ", m1, tu, ma\n"
-        + "vslideup.vi v" + String(dst) + ", v" + String(dst + 1) + ", 1\n"
-        + _vse[sew]() + " v" + String(dst) + ", (s5)\n"
-        + "99:\n"
-    )
+    body += _mv_reduce_pair[sew, lmul](b0, b1, dst)
+    body += _mv_store_pair[sew](dst)
+    body += "99:\n"
     return body
 
 
