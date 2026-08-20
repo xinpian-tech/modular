@@ -347,8 +347,48 @@ add cross-lane coordination (the earlier tuned-config experiment
 measured `vfredusum` occupancy 206 -> 252 at 8 lanes — consistent with
 853k here); fewer, wider lanes cost lane-level parallelism in the fold
 and elementwise phases without helping the serial reduction at all.
-Stock blastoise's 4 x 64b is the right slicing; the axis is closed with
-the same conclusion as every other one (§11).
+Stock blastoise's 4 x 64b is the right slicing.
+
+### 12.1 Why both directions lose: the per-class decomposition
+
+Retirement traces for all three slicings (same binary, so instruction
+counts are identical -- 36,979 vector instructions per layer launch):
+
+| occupancy p50/p90 (cy) | 8 x 32b | 4 x 64b | 2 x 128b |
+|---|---|---|---|
+| `vle32` m2 vl=128 | 90 / 169 | 91 / 170 | 91 / **236** |
+| `vfmacc` m2 vl=128 | 65 / 76 | 66 / 90 | 66 / **165** |
+| `vmv.v.i` m2 | 140 | 139 | **171** |
+| `vfredusum` m1 vl=64 | **170** / 254 | 148 / 208 | **140** / 190 |
+| `vfadd` m1 (fold) | 60 | 60 | 60 |
+| layer total | 853,203 | 817,844 | 903,469 |
+
+laneScale moves cost between two different units:
+
+- **More, narrower lanes tax the reduction.**  `vfredusum` occupancy
+  climbs 140 -> 148 -> 170 across 2/4/8 lanes: the reduce combines
+  per-lane partials through the mask unit, and both the cross-lane
+  combine chain and the per-lane orchestration grow with lane count.
+  (In-lane chunk count moves the *other* way --
+  `reduceResultChunkCount = datapathWidth/eLen` is 4 at 128-bit lanes
+  vs 1 at 32-bit -- but the cross-lane part dominates.)  Streaming is
+  actually *best* at 8 lanes (tightest p90s, `vfmacc` cadence 42 vs 49
+  cy): per-lane port pressure is lowest at 1 elem/lane/cycle.
+- **Fewer, wider lanes tax the streaming phases.**  At 2 x 128b the
+  p50s are unchanged but the p90 tails explode (`vle32` 170 -> 236,
+  `vfmacc` 90 -> 165, `vmv.v.i` +23%): each lane must move 4 e32/cycle
+  through its VRF slice -- two operand reads plus the load-write stream
+  against the same single-port banks -- so intermittent bank conflicts
+  stall the chained load->MAC pipeline.  The reduce improves (140), but
+  it cannot pay for the streaming tails.
+
+So the axis is a genuine tradeoff between cross-lane coordination
+(reduction path) and per-lane VRF port bandwidth (streaming path), and
+at DLEN = 256 the crossover sits exactly at 4 x 64b.  It also cleanly
+explains the hardware-tuning section's earlier observation (reduce
+206 -> 252 at 8 lanes on the tuned config) and predicts that a two-port
+VRF shifts the optimum toward wider lanes, while a pipelined reduction
+unit shifts it toward narrower ones.
 
 ## 13. Reproducing
 
