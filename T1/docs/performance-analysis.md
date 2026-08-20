@@ -402,7 +402,52 @@ explains the hardware-tuning section's earlier observation (reduce
 VRF shifts the optimum toward wider lanes, while a pipelined reduction
 unit shifts it toward narrower ones.
 
-## 13. Reproducing
+## 13. Startup time and dead time, measured per unit
+
+Occupancy at two vector lengths (vl=128/32) linearly separates each
+unit's pipeline-fill **startup** (intercept) from marginal throughput
+(slope); retire spacing of back-to-back same-unit instructions gives the
+**initiation interval**, whose excess over the element work is **dead
+time**:
+
+| unit | 8 x 32b | 4 x 64b | 2 x 128b |
+|---|---|---|---|
+| `vle32` startup / marginal thr | 47 cy / 3.0 e/cy | 47 cy / 2.9 e/cy | 47 cy / 2.9 e/cy |
+| `vfmacc` startup / marginal thr | 38 cy / 4.6 e/cy | 37 cy / 4.4 e/cy | 37 cy / 4.4 e/cy |
+| `vfredusum` initiation interval (64 e32) | 127 cy | 104 cy | 95 cy |
+| -> of which dead time (work = 8 cy) | **119 cy** | **96 cy** | **87 cy** |
+| `vmv.v.i` occupancy (128 e32) | 140 | 139 | **171** |
+
+Three findings:
+
+1. **Startup is large (~40-50 cy per instruction) and lane-invariant.**
+   The steady-state pair period (550 cy at 4 x 64b) is almost entirely a
+   stack of dependent startups/initiation intervals — init -> loads(47)
+   -> last MAC(37) -> fold(60+60) -> reduce(104+104) -> slide(61) ->
+   store(48) ~ 520 cy — while the throughput work in the same pair is
+   ~110 cy.  This, not issue bandwidth, is the root of the 46.9% vector
+   idle measured in §8: the chain is data-dependent, so neither more
+   slots nor wider issue can compress it.  It also explains why the
+   marginal load throughput (~3 e/cy) sits far below DLEN/4B = 8 e/cy:
+   short chunks never amortize the fill.
+2. **The reduction unit is ~92% dead time** (95-127 cy initiation for
+   8 cy of element work), and its dead time *grows with lane count*
+   (+32 cy from 2 to 8 lanes = the cross-lane combine/orchestration).
+   That is the whole laneScale=1 regression, and it is why pipelining
+   this one unit dwarfs every other knob measured in this document.
+3. **The 2 x 128b outlier is `vmv.v.i` (+32 cy), a write-path term**:
+   with two lanes the accumulator-init and store/slide writes share
+   half as many per-lane write queues at twice the per-lane burst
+   length.  Banks and RAM ports were falsified as the cause in §12.1;
+   the queueing structure, thinned with the lane count, remains.
+
+Design reading: chime, slots, banks and lanes all orbit two fixed
+costs — a ~45-cycle per-instruction startup and a ~100-cycle reduce
+initiation interval.  Cutting those two numbers (deeper decoupling of
+the issue-to-lane path; a pipelined reduction tree) is worth more than
+every configuration axis combined.
+
+## 14. Reproducing
 
 ```sh
 # run any workload on the RTL simulator with per-launch traces kept:
