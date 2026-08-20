@@ -137,6 +137,10 @@ public:
   /// Registers a traits object, taking ownership.
   void add(std::unique_ptr<TargetTraits> traits);
 
+  /// Registers traits supplied by a dynamic device plugin. Plugin traits are
+  /// considered before built-in traits during lookup.
+  void addPlugin(std::unique_ptr<TargetTraits> traits);
+
   /// Returns the traits describing `triple`.
   ErrorOr<const TargetTraits *> lookup(const llvm::Triple &triple) const;
   llvm::ArrayRef<std::unique_ptr<TargetTraits>> targets() const {
@@ -148,6 +152,7 @@ private:
   friend struct llvm::object_creator<TargetTraitsRegistry>;
 
   std::vector<std::unique_ptr<TargetTraits>> Targets;
+  size_t NumPluginTargets = 0;
 };
 
 /// Errors if not `isBastTarget` and MAX is not installed.

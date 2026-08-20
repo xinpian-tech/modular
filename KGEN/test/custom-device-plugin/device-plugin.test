@@ -1,0 +1,10 @@
+// RUN: env MODULAR_MOJO_MAX_MOJO_PLUGIN_PATHS=%device-plugin mojo build --print-supported-accelerators | FileCheck %s --check-prefix=PLUGIN
+// RUN: env MODULAR_MOJO_MAX_MOJO_PLUGIN_PATHS=%device-plugin mojo build --target-triple=x86_64-unknown-linux-gnu --print-effective-target | FileCheck %s --check-prefix=OVERRIDE
+// RUN: not env MODULAR_MOJO_MAX_MOJO_PLUGIN_PATHS=%t.missing mojo --help 2>&1 | FileCheck %s --check-prefix=MISSING
+
+// PLUGIN: Custom device plugin test targets:
+// PLUGIN-NEXT:   custom-device-test  - Loaded from a dynamic device plugin
+
+// OVERRIDE: --target-cpu x86-64
+
+// MISSING: mojo: error: failed to load custom device plugin '{{.*}}.missing':

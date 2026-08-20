@@ -112,6 +112,11 @@ void TargetBackendRegistry::add(std::unique_ptr<TargetBackend> backend) {
   Backends.push_back(std::move(backend));
 }
 
+void TargetBackendRegistry::addPlugin(std::unique_ptr<TargetBackend> backend) {
+  Backends.insert(Backends.begin() + NumPluginBackends, std::move(backend));
+  ++NumPluginBackends;
+}
+
 ErrorOr<const TargetBackend *>
 TargetBackendRegistry::lookup(const llvm::Triple &triple) const {
   // A backend that resolves `triple` to one it owns takes precedence over a

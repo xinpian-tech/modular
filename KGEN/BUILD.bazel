@@ -1009,7 +1009,10 @@ modular_cc_library(
     ),
     hdrs = glob(
         ["include/KGEN/Support/**/*.h"],
-        exclude = ["include/KGEN/Support/ForceLinkMLIRC.h"],
+        exclude = [
+            "include/KGEN/Support/CustomDevicePlugin.h",
+            "include/KGEN/Support/ForceLinkMLIRC.h",
+        ],
     ),
     local_defines = CONFIG_SECTION_LOCAL_DEFINES + [
         "MODULAR_KGEN_PROFILING_ENABLED=1",
@@ -1072,8 +1075,7 @@ modular_cc_library(
 # Per-target lowering interface and registry. Shared by KGENToLLVM, which
 # registers the target lowerings, and Transforms, which queries them.
 modular_cc_library(
-    name = "TargetLowering",
-    srcs = ["lib/Target/TargetLowering.cpp"],
+    name = "TargetLowering.headers",
     hdrs = ["lib/Target/TargetLowering.h"],
     strip_include_prefix = "lib",
     visibility = [
@@ -1082,6 +1084,24 @@ modular_cc_library(
     ],
     deps = [
         ":KGENDialect",
+        ":TargetTraits.headers",
+        "//Support:DebugInfoDialect",
+        "//Support:MDialect",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:IR",
+    ],
+)
+
+modular_cc_library(
+    name = "TargetLowering",
+    srcs = ["lib/Target/TargetLowering.cpp"],
+    strip_include_prefix = "lib",
+    visibility = [
+        "//KGEN:consumers",
+        "//KGEN:plugin_consumers",
+    ],
+    deps = [
+        ":TargetLowering.headers",
         ":TargetTraits",
         "//Support:DebugInfoDialect",
         "//Support:MDialect",
@@ -1095,6 +1115,20 @@ modular_cc_library(
 # metadata without linking `TargetBackend`. Each target self-registers from its
 # own source file; dropping a target's file drops it from the build.
 modular_cc_library(
+    name = "TargetTraits.headers",
+    hdrs = ["lib/Target/TargetTraits.h"],
+    strip_include_prefix = "lib",
+    visibility = [
+        "//KGEN:consumers",
+        "//KGEN:plugin_consumers",
+    ],
+    deps = [
+        "//Support:Base",
+        "@llvm-project//llvm:Support",
+    ],
+)
+
+modular_cc_library(
     name = "TargetTraits",
     # TargetLowering.{cpp,h} live in this same directory but belong to the
     # separate :TargetLowering target, so exclude them from this recursive glob.
@@ -1104,7 +1138,10 @@ modular_cc_library(
     ),
     hdrs = glob(
         ["lib/Target/**/*.h"],
-        exclude = ["lib/Target/TargetLowering.h"],
+        exclude = [
+            "lib/Target/TargetLowering.h",
+            "lib/Target/TargetTraits.h",
+        ],
     ),
     strip_include_prefix = "lib",
     visibility = [
@@ -1113,6 +1150,7 @@ modular_cc_library(
     ],
     deps = [
         ":Support",
+        ":TargetTraits.headers",
         "//Support:Configuration",
         "@llvm-project//llvm:Support",
     ],
@@ -1120,6 +1158,31 @@ modular_cc_library(
     # aren't referenced directly, so the linker would drop them. Force them to
     # be linked.
     alwayslink = True,
+)
+
+modular_cc_library(
+    name = "CustomDevicePlugin.headers",
+    hdrs = ["include/KGEN/Support/CustomDevicePlugin.h"],
+    includes = ["include"],
+    visibility = [
+        "//KGEN:consumers",
+        "//KGEN:plugin_consumers",
+    ],
+    deps = ["//Support:Base"],
+)
+
+modular_cc_library(
+    name = "CustomDevicePlugin",
+    srcs = ["lib/CustomDevicePlugin/CustomDevicePlugin.cpp"],
+    visibility = ["//KGEN:consumers"],
+    deps = [
+        ":CustomDevicePlugin.headers",
+        ":HostBackend",
+        ":Support",
+        ":TargetLowering",
+        ":TargetTraits",
+        "@llvm-project//llvm:Support",
+    ],
 )
 
 modular_cc_library(
@@ -1283,7 +1346,7 @@ modular_cc_library(
     ],
     deps = [
         ":KGENDialect",
-        ":TargetTraits",
+        ":TargetTraits.headers",
         ":ToolCommon.headers",
         "//Support:Buffer",
         "@llvm-project//llvm:Support",
