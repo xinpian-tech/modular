@@ -329,7 +329,28 @@ GEMV-class workloads on blastoise-family configs:
   points at the same conclusion: **pipeline the reduction unit first;
   every other knob is second-order until then.**
 
-## 12. Reproducing
+## 12. Lane organization (laneScale): a shallow optimum at 64-bit lanes
+
+Last axis: how the fixed DLEN=256 is sliced into lanes
+(`--laneScale`: lane datapath = 32 x laneScale bits).  VLEN 2048,
+MV_LMUL=2, uniform generator, stock config otherwise:
+
+| laneScale | lanes | layer cycles | SAXPY n=4096 |
+|---|---|---|---|
+| 1 | 8 x 32b | 853,203 (+4.3%) | 3,390 |
+| **2** | **4 x 64b** | **817,844** | 3,390 |
+| 4 | 2 x 128b | 903,469 (+10.5%) | 3,390 |
+
+SAXPY is bit-identical in cycles across all three — pure streaming sees
+only DLEN.  The GEMV kernel sees the organization: more, narrower lanes
+add cross-lane coordination (the earlier tuned-config experiment
+measured `vfredusum` occupancy 206 -> 252 at 8 lanes — consistent with
+853k here); fewer, wider lanes cost lane-level parallelism in the fold
+and elementwise phases without helping the serial reduction at all.
+Stock blastoise's 4 x 64b is the right slicing; the axis is closed with
+the same conclusion as every other one (§11).
+
+## 13. Reproducing
 
 ```sh
 # run any workload on the RTL simulator with per-launch traces kept:
