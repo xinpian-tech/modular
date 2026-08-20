@@ -374,13 +374,25 @@ laneScale moves cost between two different units:
   vs 1 at 32-bit -- but the cross-lane part dominates.)  Streaming is
   actually *best* at 8 lanes (tightest p90s, `vfmacc` cadence 42 vs 49
   cy): per-lane port pressure is lowest at 1 elem/lane/cycle.
-- **Fewer, wider lanes tax the streaming phases.**  At 2 x 128b the
-  p50s are unchanged but the p90 tails explode (`vle32` 170 -> 236,
-  `vfmacc` 90 -> 165, `vmv.v.i` +23%): each lane must move 4 e32/cycle
-  through its VRF slice -- two operand reads plus the load-write stream
-  against the same single-port banks -- so intermittent bank conflicts
-  stall the chained load->MAC pipeline.  The reduce improves (140), but
-  it cannot pay for the streaming tails.
+- **Fewer, wider lanes tax the serialized inter-pair segment — and the
+  load "tail" is a measurement artifact.**  Two follow-up experiments
+  falsified the obvious bank-conflict reading of the p90 table: at
+  2 x 128b, neither `vrfBankSize` 4 -> 8 nor a `p0rp1w` two-port VRF
+  removes the 27.9% of loads at ~230 cycles (the share is bit-identical
+  in all three configs; each shaves only ~3.5% of the span, 903,117 ->
+  873,893 / 869,720, with load p50 91 -> 83/85 — a small real conflict
+  term).  Tracing the slow loads shows they retire a median of **8
+  cycles after their program-order predecessor retires**: they are the
+  first loads of each pair, issued while the previous pair's
+  init/fold/reduce/store chain is still retiring, and their occupancy
+  measures **in-order retirement queueing**, not execution stalls.  The
+  real regression is in that serialized chain: the steady-state pair
+  period grows 550 -> 607 cycles, matching `vmv.v.i` init +32 x2 and
+  related write-side growth, while load/MAC p50s are unchanged.  At two
+  lanes, every per-lane structure that is not datapath — write queues,
+  slot state machines, mask-unit interfaces — is halved while per-lane
+  work doubles: the coordination fabric thins out even though the
+  arithmetic bandwidth is identical.
 
 So the axis is a genuine tradeoff between cross-lane coordination
 (reduction path) and per-lane VRF port bandwidth (streaming path), and
