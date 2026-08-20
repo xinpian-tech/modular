@@ -297,7 +297,39 @@ smallest matvec n.  It costs ~9% versus §9's vfmul-first-chunk variant
 at VLEN 2048 (817,844 vs 751,127 at LMUL 2); a comptime fast path for
 callers that guarantee n >= chunk is the obvious follow-up.
 
-## 11. Reproducing
+## 11. The DLEN axis: sublinear, and the reduce unit is why
+
+The complementary sweep: VLEN fixed at 2048, DLEN 128/256/512 (2/4/8
+lanes x 64 bit; the AXI data width follows DLEN, so this scales execute
+*and* memory bandwidth together).  The kernels are unchanged — DLEN is
+architecturally invisible to RVV code.  Layer kernel, uniform generator:
+
+| DLEN | chime (m1) | MV_LMUL=2 | MV_LMUL=4 | SAXPY n=4096 |
+|---|---|---|---|---|
+| 128 | 16 cy | 1,304,573 | 1,732,957 | 4,294 |
+| 256 | 8 cy | 817,844 | 1,019,522 | 3,390 |
+| 512 | 4 cy | **693,220** | 714,771 | 2,880 |
+
+Doubling DLEN buys 1.60x at the low end but only **1.18x** from 256 to
+512, against 2x the datapath and bus area.  The Amdahl term is the same
+serial reduction unit as everywhere else in this document: its
+throughput does not scale with lanes (§ hardware-tuning even measured it
+*degrading* with more lanes at fixed DLEN), so as the streaming phases
+shrink, the reduce share of every row grows.  Note LMUL=4 gains more
+from DLEN=512 than LMUL=2 does (its longer chunks actually use the wider
+datapath), nearly closing the L2/L4 gap.
+
+Taken together, the two chime sweeps give a clean design statement for
+GEMV-class workloads on blastoise-family configs:
+
+- chime up via VLEN: strictly worse (serial reduce work per row scales
+  with VLEN);
+- chime down via DLEN: better but sublinear (serial reduce share grows);
+- every axis measured — VLEN, DLEN, LMUL, lanes, VRF ports, slots —
+  points at the same conclusion: **pipeline the reduction unit first;
+  every other knob is second-order until then.**
+
+## 12. Reproducing
 
 ```sh
 # run any workload on the RTL simulator with per-launch traces kept:
