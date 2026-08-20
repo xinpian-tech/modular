@@ -663,7 +663,7 @@ including this GEMV: the layer's 341,281 cycles are 3,072
 (load, MAC) pairs at 111 cy each, exactly the microbenchmark's pair
 cost, against a 69-cycle load-bandwidth floor of ~212,000.
 
-The retirement trace names the mechanism.  In the independent
+The retirement trace names a candidate.  In the independent
 load+arith stream, writes *do* interleave (the `vfadd` writes
 500-607 while loads write 459-568 and 571-680), yet:
 
@@ -675,21 +675,46 @@ seq  inst     issue  firstW  lastW  retire  release
 ```
 
 **issue(N) == release(N-5)** for every instruction: at most five vector
-instructions are ever in flight (`chainingSize` = 4 slots + 1 in
-`requestReg`), while per-instruction latency is 225-336 cycles — of
-which 221 is the load waiting to start writing.  By Little's law,
-5 / 280 = one instruction per 56 cycles = the measured 112 per pair.
-The window, not the datapath, is the binding constraint: the mixed
-stream leaves 27% of the demonstrated VRF write rate (9.9 of 13.5
-elem/cy) unused.
+instructions are ever in flight, against a 225-336 cycle
+per-instruction latency.  Little's law then explains the pair cost
+exactly (5 / 280 = one instruction per 56 cycles = 112 per pair) — so
+the window looked like the answer.
 
-Two hardware directions follow, and they are testable rather than
-speculative: raise the window (`chainingSize` > 4, which elaborates
-only since [#176](https://github.com/xinpian-tech/T1/pull/176)), or cut
-the 221-cycle issue-to-first-write latency.  Note that the earlier §8
-result ("8-deep chaining does not help") was measured on a kernel whose
-own vtype ping-pong and scalar dependences kept it at 5 in flight
-anyway — it does not settle the question for streaming kernels.
+### 18.1 Testing that hypothesis, and discarding it
+
+Two hardware builds settle it.  `chainingSize = 8` (which elaborates
+only with [#176](https://github.com/xinpian-tech/T1/pull/176)) changed
+nothing — and the trace showed why: still five in flight.  The window
+is not the slot count.  `T1.scala`'s `instructionIndexFree` admits an
+instruction only if every occupied slot differs in the low **two** bits
+of `instructionIndex` — a constant where the report paths
+(`indexToOH(_, chainingSize)`) only need `log2(chainingSize)` bits.
+Four tags, four in flight, plus the one in `requestReg` = the observed
+five, at any `chainingSize`.  Deriving that width from `chainingSize`
+([#183](https://github.com/xinpian-tech/T1/pull/183); byte-identical
+generated SV at cs4, verified by diffing the whole `.sv` set) raises
+the trace window to 9:
+
+| stream (m8, vl=512) | cs4 | cs8 | cs8 + #183 |
+|---|---|---|---|
+| `vle32` only | 69 | 69 | 69 |
+| independent `vfadd.vv` | 38 | 30 | **25** |
+| `vle32` + 1 independent `vfadd.vv` | 112/pair | 112/pair | **112/pair** |
+| max in flight | 5 | 5 | **9** |
+| layer kernel | 341,281 | 341,281 | 341,281 |
+
+Arithmetic-dense streams gain 34%; the mixed stream and the llama layer
+do not move at all.  **The window was not the cause.**  What remains is
+a write-side resource conflict between LSU VRF writes and lane
+execution: the mixed stream saturates at ~10 element-writes/cycle while
+a pure arithmetic stream sustains 20.5 (512 elements / 25 cy) and a
+pure load stream 7.4 (AXI-bound), and a load's write burst stretches
+from 69 to 109 cycles whenever an arithmetic instruction runs alongside
+it.  Neither dependence (112 independent vs 108 dependent) nor operand
+reads (`vfadd.vf` 112 = `vfadd.vv` 112) change it, which points at
+bank/port arbitration on the write path rather than at operand reads —
+the one hypothesis in §4.3 that the retirement trace alone could never
+confirm, and the one place left where 1.6x is sitting.
 
 ## 19. Reproducing
 
