@@ -548,7 +548,47 @@ order: decouple the slot shift (or allow out-of-order slot retirement),
 cut the ~45-cycle instruction startup, pipeline the reduction unit
 (still needed for attention at long context).
 
-## 16. Reproducing
+## 16. Does the MAC chain?  The initiation-interval matrix
+
+Microbenchmarks (pure instruction streams, cycles from launch deltas
+between N=16 and N=48 repetitions, stock config) settle what chains and
+what does not:
+
+| stream (e32) | II per instruction | notes |
+|---|---|---|
+| independent `vfadd.vv` m1 | 5 | deeply pipelined |
+| independent `vfadd.vv` m4 | 19 | 4 destination chains |
+| independent `vfadd.vv` m8 (vl=512, work 64 cy) | **38** | cross-slot overlap works |
+| independent `vfmacc.vf` m8 | **50** | MACs pipeline fine alone |
+| **dependent** `vfadd.vv` chain m8 | **89** | arith->arith has NO element-level chaining: full serialization |
+| pure `vle32` m8 | 69 | ~2-deep, near beat rate |
+| `vle32`+`vfmacc.vf` interleaved 1:1 | 110/pair | the kernel's shape |
+| same instructions, 4+4 grouped | 58/pair | order matters in the micro... |
+| 2+2 grouped (legal register schedule) | 104/pair | ...but not with real buffer counts |
+
+Answers to "why don't the MACs chain":
+
+1. **They do.**  Dependent load->MAC chaining works (that is how a MAC
+   starts ~33 cy into its producer's stream), and independent MAC->MAC
+   pipelining works (II 38-50 vs occupancy ~90).
+2. What does NOT exist is (a) element-level chaining between
+   **dependent arithmetic** instructions (II 89 ~ occupancy - the
+   consumer waits out the producer), and (b) more than ~2-deep overlap
+   in the lane pipelines.
+3. At the layer's dimensions (m=288 -> vl=288, only 36 beats of data
+   per load) both instructions of a column are **startup-dominated**
+   (~47 cy fill each): two instructions at ~2-deep overlap give the
+   invariant ~96 cy/column that every software restructure hit -
+   single/dual accumulators, 1:1/2:2/4:4 ordering, m4/m8 blocking all
+   land within 1% (341,281 / 342,954 / 344,095 / 342,808).  The same
+   kernels at TinyLlama's dimensions (vl=512 blocks) sit much closer to
+   beat rate.
+
+This closes the loop with §13: for short-vector GEMV the ~47-cycle
+per-instruction startup is not one bottleneck among several - it is the
+only remaining one, and it is a hardware number.
+
+## 17. Reproducing
 
 ```sh
 # run any workload on the RTL simulator with per-launch traces kept:
