@@ -552,7 +552,10 @@ cut the ~45-cycle instruction startup, pipeline the reduction unit
 
 Microbenchmarks (pure instruction streams, cycles from launch deltas
 between N=16 and N=48 repetitions, stock config) settle what chains and
-what does not:
+what does not.  **The absolute values below are understated** — §18.1
+shows streams this short do not saturate the machine, so read this
+table for the *ratios* between shapes, and §18 for steady-state
+numbers:
 
 | stream (e32) | II per instruction | notes |
 |---|---|---|
@@ -639,82 +642,83 @@ kernels immune regardless of how the hardware resolves
 (fix proposed in PR #181: drop `vdIsV0` from `specialInstruction`,
 which lifts the dependent-v0 chain from II 89.7 to 36.25).
 
-## 18. Loads and arithmetic never overlap: an in-flight-window wall
+## 18. The real wall: VRF port bandwidth, measured at the roofline
 
-The remaining structural limit is that a vector load and a vector ALU
-instruction do not overlap in steady state — **even when they are
-completely independent**:
+### 18.1 Every initiation interval above was measured too short
 
-| stream (m8, vl=512) | II | aggregate VRF element-writes |
-|---|---|---|
-| `vle32` only | 69/instr | 7.4 elem/cy (AXI-bound: 2048 B / 69 cy = 29.7 B/cy of 32) |
-| `vfadd.vv` only, independent | 38/instr | 13.5 elem/cy |
-| `vle32` + 1 independent `vfadd.vv` | 112/pair | 9.1 elem/cy |
-| `vle32` + 2 independent `vfadd.vv` | 158/iter | 9.7 elem/cy |
-| `vle32` + 3 independent `vfadd.vv` | 207/iter | 9.9 elem/cy |
-| `vle32` + **dependent** `vfadd.vv` | 108/pair | — (same as independent!) |
-
-Each added arithmetic instruction costs its full standalone II (+46),
-and dependence changes nothing (112 vs 108) — so this is neither a
-chaining failure nor a read-port limit (a 1-read `vfadd.vf` and a
-2-read `vfadd.vv` cost the same 112).  Ideal overlap would give
-max(69, 38) = 69 per pair, i.e. **1.6x on every streaming kernel**,
-including this GEMV: the layer's 341,281 cycles are 3,072
-(load, MAC) pairs at 111 cy each, exactly the microbenchmark's pair
-cost, against a 69-cycle load-bandwidth floor of ~212,000.
-
-The retirement trace names a candidate.  In the independent
-load+arith stream, writes *do* interleave (the `vfadd` writes
-500-607 while loads write 459-568 and 571-680), yet:
+The II tables in §16 and the first version of this section used
+straight-line streams of 16-48 instructions.  A stream-length sweep
+shows that regime is **not saturated** — the whole stream hides under
+the fixed ~150-cycle launch overhead:
 
 ```
-seq  inst     issue  firstW  lastW  retire  release
-  5  vle32      350     571    680     684      686
-  6  vfadd      462     500    607     685      687
-  7  vle32      463     683    792     796      798
+instrs (m4 `vfadd.vv`, 256 elem each):   2    4    8   16   32    64
+cycles:                                 150  152  152  152  160  1168
+marginal cycles per instruction:          -  1.0  0.0  0.0  0.5  31.5
 ```
 
-**issue(N) == release(N-5)** for every instruction: at most five vector
-instructions are ever in flight, against a 225-336 cycle
-per-instruction latency.  Little's law then explains the pair cost
-exactly (5 / 280 = one instruction per 56 cycles = 112 per pair) — so
-the window looked like the answer.
+Re-measured in the saturated regime (marginal cycles between 48- and
+144-instruction streams, e32/m4, vl=256, blastoise stock):
 
-### 18.1 Testing that hypothesis, and discarding it
-
-Two hardware builds settle it.  `chainingSize = 8` (which elaborates
-only with [#176](https://github.com/xinpian-tech/T1/pull/176)) changed
-nothing — and the trace showed why: still five in flight.  The window
-is not the slot count.  `T1.scala`'s `instructionIndexFree` admits an
-instruction only if every occupied slot differs in the low **two** bits
-of `instructionIndex` — a constant where the report paths
-(`indexToOH(_, chainingSize)`) only need `log2(chainingSize)` bits.
-Four tags, four in flight, plus the one in `requestReg` = the observed
-five, at any `chainingSize`.  Deriving that width from `chainingSize`
-([#183](https://github.com/xinpian-tech/T1/pull/183); byte-identical
-generated SV at cs4, verified by diffing the whole `.sv` set) raises
-the trace window to 9:
-
-| stream (m8, vl=512) | cs4 | cs8 | cs8 + #183 |
+| stream | steady state | roofline | utilization |
 |---|---|---|---|
-| `vle32` only | 69 | 69 | 69 |
-| independent `vfadd.vv` | 38 | 30 | **25** |
-| `vle32` + 1 independent `vfadd.vv` | 112/pair | 112/pair | **112/pair** |
-| max in flight | 5 | 5 | **9** |
-| layer kernel | 341,281 | 341,281 | 341,281 |
+| `vle32` only | **37.0 cy/load** | 1024 B / 32 B/cy = 32 | 87% of AXI |
+| independent `vfadd.vv` | **33.2 cy/instr** | 256 / 8 per cy = 32 | 96% of DLEN |
+| `vle32` + `vfadd.vv` | **56.0 cy/pair** | 32 (all three units) | 57% |
+| `vle32` + `vfadd.vf` | **49.0 cy/pair** | 24 (VRF) / 32 (others) | 65% |
+| `vle32` + `vfmacc.vf` (the GEMV shape) | **56.0 cy/pair** | 32 | 57% |
 
-Arithmetic-dense streams gain 34%; the mixed stream and the llama layer
-do not move at all.  **The window was not the cause.**  What remains is
-a write-side resource conflict between LSU VRF writes and lane
-execution: the mixed stream saturates at ~10 element-writes/cycle while
-a pure arithmetic stream sustains 20.5 (512 elements / 25 cy) and a
-pure load stream 7.4 (AXI-bound), and a load's write burst stretches
-from 69 to 109 cycles whenever an arithmetic instruction runs alongside
-it.  Neither dependence (112 independent vs 108 dependent) nor operand
-reads (`vfadd.vf` 112 = `vfadd.vv` 112) change it, which points at
-bank/port arbitration on the write path rather than at operand reads —
-the one hypothesis in §4.3 that the retirement trace alone could never
-confirm, and the one place left where 1.6x is sitting.
+Each unit alone is healthy: loads reach 87% of AXI, arithmetic 96% of
+the datapath.  The mix is at 57% of all three — and 56 sits between
+fully serial (37 + 33 = 70) and fully overlapped (37), so about a fifth
+of the available overlap is realized, not none.
+
+### 18.2 The cost is VRF port accesses, and the design has no margin
+
+VRF nominal bandwidth is `laneNumber × rfBankNum × ramWidth`
+= 4 × 4 × 64 bit = **32 f32-accesses/cycle** (`rfBankNum = portFactor`,
+`ramWidth = datapathWidth = laneScale × eLen = 64`, single-ported
+`p0rw` banks).  Per element: a load costs 1 write, `vfadd.vv` and
+`vfmacc.vf` cost 2 reads + 1 write, `vfadd.vf` costs 1 read + 1 write.
+The measurements track that exactly:
+
+- `vfmacc.vf` and `vfadd.vv` have identical VRF traffic and identical
+  cost — 56.0 both, to the cycle.
+- `vfadd.vf` drops one vector read per element and costs exactly 7
+  cycles less; nominal capacity predicts 8.
+
+And at full rate the sum has **zero headroom**: arithmetic at 8
+elem/cycle needs 24 accesses/cycle, a load at 32 B/cycle needs the
+remaining 8, so load + MAC at peak is exactly 32 of 32.  The mix cannot
+overlap for free even in principle, and the 57% realized says another
+~43% is lost to bank conflicts and arbitration on top of that.
+
+This supersedes the in-flight-window story: the window
+(`chainingSize + 1`, capped at 5 by a hardcoded two-bit tag —
+[#183](https://github.com/xinpian-tech/T1/pull/183)) is real but not
+what binds.  Steady-state arithmetic is at the datapath roofline
+already at `chainingSize = 4`, and the mixed stream measures 56.0
+cycles per pair identically at cs4, cs8, and cs8 + #183.
+
+### 18.3 What would actually buy the GEMV a factor
+
+The transposed matvec's inner loop is one column load plus
+`vfmacc.vf v8, ft0, v16` — 4 VRF accesses per element (load write, two
+reads, one write), the minimum a VRF-resident accumulator allows.  Two
+hardware changes would move it, filed as suggestions on
+[#182](https://github.com/xinpian-tech/T1/issues/182):
+
+1. **Accumulator forwarding for MAC chains.** Consecutive MACs into the
+   same `vd` could keep the accumulator group VFU-local, removing its
+   read *and* write from the VRF: 4 accesses per element → 2, i.e. up
+   to **2x** on the dominant LLM-decode kernel shape, with no extra
+   bandwidth or banks.
+2. **More bank ports** (`portFactor`, or the `p0rp1w` split measured in
+   §7) so load writes stop competing with execution reads.
+
+Software has no move left here: the kernel already issues the minimum
+number of VRF accesses the ISA allows for a matvec, which is why every
+schedule variant lands within 1% (§16).
 
 ## 19. Reproducing
 
