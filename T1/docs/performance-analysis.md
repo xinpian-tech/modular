@@ -744,16 +744,66 @@ one column per iteration, stock config):
 | 12 / 16 hoisted (tuned config) | 57.4 / 57.1 |
 | next batch's `flw` interleaved between MACs | **98.6** |
 
-The scalar load of `x[j]` for `vfmacc.vf` costs ~45 cycles of stalled
-issue when it sits immediately before its consumer — and the
-constant-address control costs the same, so this is not a cache miss
-but Rocket's in-order coupling: the dependent vector instruction cannot
-issue, and nothing behind it can either.  Hoisting the batch's scalars
-into eight f-registers at the top of the batch lets them overlap each
-other and the vector stream; interleaving them back among the MACs
-undoes the whole benefit (98.6), and going deeper than eight barely
-moves (57.1 at sixteen).  Layer 341,281 → **254,311** (1.34x), head
-2,644,595 → **2,105,093**.
+The scalar load of `x[j]` for `vfmacc.vf` costs ~43 cycles of stalled
+issue when it sits immediately before its consumer.  It is tempting to
+read that as the RAW through `f[rs1]` being exposed.  It is not — the
+dependency is free, and the cost is structural, on the scalar *memory*
+path.  Same column stream, only the injected scalar instruction varies:
+
+| injected instruction | RAW with the MAC? | cy/column |
+|---|---|---|
+| none, or `addi` | — | 61.4 |
+| `fmv.w.x ft0` (writes the MAC's operand, no memory) | **yes** | **61.5** |
+| `fadd.s ft0` (same, FP ALU) | **yes** | **61.5** |
+| `lw` (integer load, result never read) | no | **104.6** |
+| `flw ft9` (FP load, result never read) | no | **104.6** |
+| `flw ft0` (FP load the MAC consumes) | yes | 104.6 |
+| `sw` (a *store* — returns no data at all) | no | **104.6** |
+
+A register producer feeding the vector instruction one cycle later is
+free; any memory operation costs 43 cycles whether it is integer or
+floating point, load or store, consumed or dead.  The RTL says why:
+
+- The vector instruction's scalar operand never waits at T1.  `vfmacc.vf`
+  decodes as `vectorReadFRs1`, Rocket's own FPU reads the FP regfile in
+  EX, and WB enqueues instruction *and* operand into the 32-deep T1
+  issue queue (`rocketvzaozi/src/Rocket.scala:2063-2073`).
+- The whole data region is uncached: `--cacheable=1111...1`
+  (`designs/blastoise.toml:41`) is a 32-bit exact-match bitpat, so only
+  `0xFFFF_FFFF` is cacheable while the SRAM lives at `0x8000_0000`.
+  Every scalar access is therefore a full AXI round trip returned as a
+  replay (`rocketvzaozi/src/HellaCache.scala:1151`).
+- `maxUncachedInFlight == 1` (`HellaCache.scala:823`): a second uncached
+  access is nacked into `replayWb`/`takePcWb`, a full flush and refetch.
+- Issue is in-order and single (`IBuf.scala:28`, ID dequeue gated by
+  `ctrlStalld`), so that stall blocks every later instruction —
+  including vector instructions that have nothing to do with it.  The
+  vector unit drains, and the round trip is fully exposed.
+
+Related but separate: `fpDataHazardEx/Mem/Wb` are gated by
+`idDecodeOutput(d.fp)` (`Rocket.scala:1796-1801`), which is 0 for rv_v,
+so the precise interlock does not cover a vector `frs1` read at all —
+the correctness hole behind #178, fixed by #179.
+
+So batching does not remove the scalar serialization; it moves it out
+from between a load and its dependent MAC, so the ~43 cycles per access
+run under the shadow of vector work already dispatched (up to five
+instructions in flight).  Eight accesses at ~43 = ~344 cycles of scalar
+time fit under eight columns at ~47 = ~376 cycles of vector time, and
+what does not fit is the residual ~10 cy/column.  The same model
+predicts the rest of the table: interleaving destroys the shadow
+(98.6), deeper batching cannot help once the shadow is saturated (57.1
+at sixteen), and back-to-back accesses are cheap after the first (+43
+for one, then ~+8.7 each) because a replay costs far less than a round
+trip once an earlier one is already in flight.  Layer 341,281 →
+**254,311** (1.34x), head 2,644,595 → **2,105,093**.
+
+The hardware fixes this implies, in order of value: make the device
+window cacheable for the D$ (32-byte lines would amortize `x[j]` over
+eight columns — but the same launch's vector stores feed those scalar
+reads, so it needs a fence or a coherent D$ first); allow more than one
+uncached access in flight; and land #179 so the precise interlock
+covers vector `frs1` reads.
 
 ### 19.2 The `portFactor` sweep
 
