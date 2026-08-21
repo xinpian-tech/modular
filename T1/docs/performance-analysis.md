@@ -720,7 +720,91 @@ Software has no move left here: the kernel already issues the minimum
 number of VRF accesses the ISA allows for a matvec, which is why every
 schedule variant lands within 1% (§16).
 
-## 19. Reproducing
+## 19. Hitting the roofline: VRF ports, and the scalar tax
+
+§18 left the mix at 57% of every roofline with the diagnosis "VRF port
+bandwidth, provisioned with zero margin".  Both halves of that are now
+tested — the hardware side by sweeping `portFactor`/`vrfRamType`, the
+software side by fixing what turned out to be a larger loss than either.
+
+### 19.1 The scalar tax, and how to pay less of it
+
+The layer kernel ran at 111 cy/column while the same instruction pair
+in a microbenchmark ran at 61.4.  Isolating the difference (vl=288, m8,
+one column per iteration, stock config):
+
+| shape | cy/column |
+|---|---|
+| load + MAC, address constant | 61.4 |
+| load + MAC, streaming addresses | **61.4** (streaming is free) |
+| load + MAC + one `flw` per column | **104.0** |
+| same, `flw` from a constant address | 106.8 |
+| load + MAC, 4 `flw` hoisted per 4 columns | 72.8 |
+| load + MAC, 8 `flw` hoisted per 8 columns | **71.4** |
+| 12 / 16 hoisted (tuned config) | 57.4 / 57.1 |
+| next batch's `flw` interleaved between MACs | **98.6** |
+
+The scalar load of `x[j]` for `vfmacc.vf` costs ~45 cycles of stalled
+issue when it sits immediately before its consumer — and the
+constant-address control costs the same, so this is not a cache miss
+but Rocket's in-order coupling: the dependent vector instruction cannot
+issue, and nothing behind it can either.  Hoisting the batch's scalars
+into eight f-registers at the top of the batch lets them overlap each
+other and the vector stream; interleaving them back among the MACs
+undoes the whole benefit (98.6), and going deeper than eight barely
+moves (57.1 at sixteen).  Layer 341,281 → **254,311** (1.34x), head
+2,644,595 → **2,105,093**.
+
+### 19.2 The `portFactor` sweep
+
+`rfBankNum = rowWidth / ramWidth = portFactor`, so `portFactor` is
+literally the number of single-ported VRF banks per lane, and
+`vrfRamType` decides whether a bank port is shared between reads and
+writes (`p0rw`) or split (`p0rp1w`).  Steady-state m4 streams:
+
+| stream | pf4/p0rw (stock) | pf8 | pf4/p0rp1w | pf8+p0rp1w | pf16+p0rp1w |
+|---|---|---|---|---|---|
+| 2× `vle32` | 74.0 | 74.0 | 74.0 | 74.0 | 74.0 |
+| 2× `vfadd.vv` | 66.3 | 66.0 | 65.9 | 66.4 | 65.0 |
+| `vle32` + `vfadd.vv` | 56.0 | 43.2 | 49.0 | **43.2** | 43.2 |
+| `vle32` + `vfmacc.vf` | 56.0 | 46.4 | 43.5 | **43.1** | 43.1 |
+| llama layer kernel | 254,311 | 213,238 | 210,592 | **201,368** | 200,928 |
+| llama head kernel | 2,105,093 | 1,682,274 | 1,676,202 | **1,454,575** | — |
+
+Reading it:
+
+- Pure streams are unmoved — they were never VRF-bound (AXI 88%,
+  datapath 96%).
+- The mix goes from 57% to **86%** of its roofline; the diagnosis in
+  §18.2 was right, and doubling the banks is what fixes it.
+- **`portFactor` saturates at 8**: 16 banks measure identically, so the
+  residual 14% is not VRF bandwidth.
+- The two knobs overlap: 8 banks or split ports each recover most of
+  it, and together they recover slightly more than either.
+
+### 19.3 Where the kernel now stands
+
+At the kernel's own shape (vl=288, m8) on `pf8 + p0rp1w`:
+
+| | cy/column | vs roofline |
+|---|---|---|
+| pure load stream (the roofline: 1152 B at 88% of AXI) | 41.0 | — |
+| load + MAC, no scalars | 47.3 | **87%** |
+| load + MAC + batched scalars | 58.1 | 71% |
+| the real kernel (mixed vl across strips) | ~65 | — |
+
+The vector half of the GEMV is within 13% of what the memory system
+can deliver, and `portFactor` is no longer what stands between it and
+the roofline.  What remains is the ~10 cy/column scalar tax, which is
+structural in an in-order scalar core coupled to the vector unit: it
+cannot be batched away (12/16-deep is flat) and must not be spread out
+(interleaving costs 1.7x).
+
+Layer 341,281 → **200,928** cycles overall: 1.34x from the software
+change, 1.26x from the VRF configuration, **1.70x** together, with
+token-exact output on both simulators throughout.
+
+## 20. Reproducing
 
 ```sh
 # run any workload on the RTL simulator with per-launch traces kept:
