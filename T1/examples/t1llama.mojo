@@ -70,6 +70,8 @@ comptime SEW = 32
 comptime VLEN = get_defined_int["T1_VLEN", 2048]()
 comptime MV_LMUL = get_defined_int["T1_MV_LMUL", 2]()
 comptime MV_TRANSPOSED = get_defined_int["T1_MV_T", 1]() != 0
+# Columns per scalar-prefetch batch in the transposed matvec (<= 8).
+comptime MV_BATCH = get_defined_int["T1_MV_BATCH", 8]()
 comptime EW_LMUL = get_defined_int["T1_EW_LMUL", 8]()
 
 comptime _VCLOB2 = (
@@ -77,7 +79,8 @@ comptime _VCLOB2 = (
     "~{v11},~{v12},~{v13},~{v14},~{v15},~{v16},~{v17},~{v18},~{v19},~{v20},"
     "~{v21},~{v22},~{v23},~{v24},~{v25},~{v26},~{v27},~{v28},~{v29},~{v30},"
     "~{v31},~{t0},~{t1},~{t2},~{t3},~{t4},~{t5},~{t6},~{a4},~{a5},~{s2},"
-    "~{s3},~{s4},~{s5},~{s6},~{s7},~{ft0},~{ft1},~{memory}"
+    "~{s3},~{s4},~{s5},~{s6},~{s7},~{ft0},~{ft1},~{ft2},~{ft3},~{ft4},"
+    "~{ft5},~{ft6},~{ft7},~{memory}"
 )
 
 comptime _VCLOB = (
@@ -240,21 +243,42 @@ def _mv_asm[sew: Int, lmul: Int]() -> String:
     return body
 
 
-def _mv_t_asm[sew: Int, lmul: Int]() -> String:
+def _mv_t_asm[sew: Int, lmul: Int, batch: Int]() -> String:
     """Reduction-free matvec over an offline-TRANSPOSED weight matrix.
+
     Register plan: single accumulator chain v8, double-buffered column
-    loads v16/v24.  v0 is never written: it is the RVV mask register and
-    a v0 write is classed "special" (pinned to the one shared sequencer
-    slot, admitted only when idle — T1 issue #180), serializing dependent
-    consumers at retirement cadence.  A single accumulator is enough
-    because dependent arithmetic chains on non-v0 registers do element
-    chain (measured II 35, same as independent streams); the former dual
-    accumulator was working around what was really the v0 penalty.
-    Scalars prefetch one column ahead in alternating f-registers
-    (stale-fs1 workaround, #178).  Contract: n even.
+    loads v16/v24.  v0 is never written — it is the RVV mask register,
+    and writing it pins the instruction to the one shared sequencer slot
+    (T1 issue #180).  Dependent arithmetic on ordinary registers chains
+    element-wise (II 35, same as independent streams), so one
+    accumulator suffices.
+
+    The scalars are the interesting part.  Each column needs x[j] in an
+    f-register for `vfmacc.vf`, and Rocket issues in order: a `flw`
+    immediately before its consumer costs ~45 cycles of stalled issue
+    even when the address is already resident (measured: 61.4 cy/column
+    with no scalar load, 104-107 with one per column, at vl=288/m8).
+    Hoisting `batch` independent `flw`s to the top of the batch drops
+    that to 71.4 — the loads overlap each other and the vector stream
+    instead of serializing against it.  It also subsumes the #178
+    stale-`fs1` workaround: every scalar is >= `batch` instructions away
+    from its use.
+
+    Contract: n divisible by `batch` (2 <= batch <= 8); the caller's
+    dimensions (288, 768, 2048, 5632, ...) all are.
     $0=wt, $1=x, $2=n (columns), $3=m (outputs), $4=out."""
     comptime shift = String(2 if sew == 32 else 1)
-    comptime esz = String(sew // 8)
+    comptime esz = sew // 8
+    var loads = String("")
+    var macs = String("")
+    for i in range(batch):
+        loads += "flw ft" + String(i) + ", " + String(i * esz) + "(t2)\n"
+        var buf = "v16" if i % 2 == 0 else "v24"
+        macs += (
+            _vle[sew]() + " " + buf + ", (t3)\n"
+            + "add t3, t3, s6\n"
+            + "vfmacc.vf v8, ft" + String(i) + ", " + buf + "\n"
+        )
     return (
         "mv s2, $3\n"
         + "mv s5, $4\n"
@@ -267,18 +291,11 @@ def _mv_t_asm[sew: Int, lmul: Int]() -> String:
         + "mv t1, $2\n"
         + "mv t2, $1\n"
         + "mv t3, s3\n"
-        + "flw ft0, 0(t2)\n"
         + "2:\n"
-        + _vle[sew]() + " v16, (t3)\n"
-        + "flw ft1, " + esz + "(t2)\n"
-        + "add t3, t3, s6\n"
-        + "vfmacc.vf v8, ft0, v16\n"
-        + _vle[sew]() + " v24, (t3)\n"
-        + "flw ft0, " + String(2 * (sew // 8)) + "(t2)\n"
-        + "add t3, t3, s6\n"
-        + "vfmacc.vf v8, ft1, v24\n"
-        + "addi t2, t2, " + String(2 * (sew // 8)) + "\n"
-        + "addi t1, t1, -2\n"
+        + loads
+        + "addi t2, t2, " + String(batch * esz) + "\n"
+        + macs
+        + "addi t1, t1, -" + String(batch) + "\n"
         + "bnez t1, 2b\n"
         + _vse[sew]() + " v8, (s5)\n"
         + "slli t0, t0, " + shift + "\n"
@@ -292,7 +309,7 @@ def _mv_t_asm[sew: Int, lmul: Int]() -> String:
 
 @always_inline
 def _mv_transposed(wt: F32Ptr, x: F32Ptr, n: Int, m: Int, out_ptr: F32Ptr):
-    comptime asm = StaticString(materialize[_mv_t_asm[SEW, 8]()]())
+    comptime asm = StaticString(materialize[_mv_t_asm[SEW, 8, MV_BATCH]()]())
     inlined_assembly[
         asm,
         NoneType,
