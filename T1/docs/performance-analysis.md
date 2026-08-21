@@ -850,6 +850,29 @@ structural in an in-order scalar core coupled to the vector unit: it
 cannot be batched away (12/16-deep is flat) and must not be spread out
 (interleaving costs 1.7x).
 
+### 19.4 Cost scales with `vl`, not VLMAX
+
+A partially-filled register group was suspected of paying full-width cost —
+the layer's 111 cy/column at vl=288 is exactly 512 × 0.217, which looks like
+an m8 instruction being charged for all 512 element slots.  It is not.
+Steady-state marginals, independent `vfadd.vv`:
+
+| shape | vl | cy/instruction | elem/cycle |
+|---|---|---|---|
+| m8 | 512 | 65.5 | 7.82 |
+| m8 | 288 | 36.9 | 7.81 |
+| m8 | 264 | 34.0 | 7.76 |
+| m4 | 256 | 33.1 | 7.73 |
+| m4 | 160 | 21.3 | 7.50 |
+| m2 | 128 | 18.5 | 6.91 |
+
+Efficiency is flat at ~7.8 elem/cycle (98% of DLEN) from vl=256 upward and
+only softens below ~160, where per-instruction startup stops amortizing.  So
+LMUL is free to follow the register budget for strip-mined streaming code —
+the earlier VLEN result (§10) is about init/fold/reduce steps written at
+VLMAX, not about strip-mined loads and MACs.  The GEMV pair behaves the same
+way: 61.4 cy at vl=288 (m8) and 54.5 at vl=256 (m4), both 4.7 elem/cycle.
+
 Layer 341,281 → **200,928** cycles overall: 1.34x from the software
 change, 1.26x from the VRF configuration, **1.70x** together, with
 token-exact output on both simulators throughout.
