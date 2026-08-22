@@ -1298,9 +1298,14 @@ modular_cc_library(
     name = "HostBackend",
     srcs = [
         "lib/Compiler/ObjectCompiler/Target/Host/HostBackend.cpp",
+        "lib/Compiler/ObjectCompiler/Target/T1/T1Backend.cpp",
         "lib/Compiler/ObjectCompiler/Target/TargetBackend.cpp",
     ],
-    hdrs = ["lib/Compiler/ObjectCompiler/Target/Host/HostBackend.h"],
+    hdrs = [
+        "lib/Compiler/ObjectCompiler/Target/Host/HostBackend.h",
+        "lib/Compiler/ObjectCompiler/Target/T1/T1Backend.h",
+        "lib/Compiler/ObjectCompiler/Target/T1/t1_builtins.inc",
+    ],
     strip_include_prefix = "lib/Compiler/ObjectCompiler",
     visibility = [
         "//KGEN:consumers",
@@ -1314,6 +1319,7 @@ modular_cc_library(
         ":ToolCommon.headers",
         "//Support:Buffer",
         "//Support:Configuration",
+        "//Support:Filesystem",
         "@llvm-project//llvm:BitWriter",
         "@llvm-project//llvm:Core",
         "@llvm-project//llvm:Instrumentation",
@@ -1342,6 +1348,9 @@ modular_cc_library(
             "lib/Compiler/ObjectCompiler/Target/TargetBackend.cpp",
             "lib/Compiler/ObjectCompiler/Target/Host/HostBackend.cpp",
             "lib/Compiler/ObjectCompiler/Target/Host/HostBackend.h",
+            "lib/Compiler/ObjectCompiler/Target/T1/T1Backend.cpp",
+            "lib/Compiler/ObjectCompiler/Target/T1/T1Backend.h",
+            "lib/Compiler/ObjectCompiler/Target/T1/t1_builtins.inc",
         ],
     ),
     data = [
