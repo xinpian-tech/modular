@@ -38,6 +38,7 @@ let
         || top == "flake.lock"
         || top == ".github"
         || top == ".cursor"
+        || top == "mojo-wireless-dsp"
         || (rel == top && lib.hasSuffix ".md" top)
       );
   };
@@ -54,7 +55,7 @@ let
   # set of external dependencies changes, `nix build .#modular-bazel-deps`
   # reports the new value.
   depsHashes = {
-    x86_64-linux = "sha256-8jG+2CMdisE549Z+2o6bl5QQPomOlcncP2UIOwBu/xM=";
+    x86_64-linux = "sha256-iivwBIs/f3xBW1pc57ctPk3TxUUlQjkE19iSzU8UteY=";
     aarch64-linux = lib.fakeHash;
   };
   deps = callPackage ./deps.nix {

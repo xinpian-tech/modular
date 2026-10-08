@@ -1,0 +1,10 @@
+MWDSP-SCALE-TRACE-V2
+testcase=phase7-corpus
+stage=scale
+version=2
+shape=2x6
+columns=raw:storage_bits:fraction_bits:right_shift:rounding:overflow
+checksum_algorithm=fnv1a64
+checksum_scope=header-utf8+rows-int64-le
+checksum=17695440471677494789
+data=3:8:2:1:0:0,2:8:2:1:1:1

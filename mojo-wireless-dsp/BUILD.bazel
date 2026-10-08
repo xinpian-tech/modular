@@ -1,0 +1,1546 @@
+load("//bazel:api.bzl", "mojo_binary", "mojo_library", "mojo_test")
+
+package(default_visibility = ["//visibility:public"])
+
+mojo_library(
+    name = "wireless_dsp",
+    srcs = glob(["wireless_dsp/**/*.mojo"]),
+    deps = ["@mojo//:std"],
+)
+
+mojo_test(
+    name = "core_test",
+    size = "small",
+    srcs = ["tests/core_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "fixed_test",
+    size = "small",
+    srcs = ["tests/fixed_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "capability_test",
+    size = "small",
+    srcs = ["tests/capability_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "cpu_backend_test",
+    size = "small",
+    srcs = ["tests/cpu_backend_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "cpu_practical_test",
+    size = "medium",
+    srcs = ["tests/cpu_practical_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "cpu_mimo_f32_test",
+    size = "medium",
+    srcs = ["tests/cpu_mimo_f32_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "cpu_phy_f32_test",
+    size = "medium",
+    srcs = ["tests/cpu_phy_f32_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "gpu_backend_api_test",
+    size = "small",
+    srcs = ["tests/gpu_backend_api_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "differential_test",
+    size = "small",
+    srcs = ["tests/differential_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "dsp_test",
+    size = "small",
+    srcs = ["tests/dsp_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "dsp_extended_test",
+    size = "small",
+    srcs = ["tests/dsp_extended_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "kernel_gap_test",
+    size = "medium",
+    srcs = ["tests/kernel_gap_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "dsp_channel_evidence_test",
+    size = "medium",
+    srcs = ["tests/dsp_channel_evidence_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "fec_evidence_test",
+    size = "medium",
+    srcs = ["tests/fec_evidence_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "backend_mimo_evidence_test",
+    size = "medium",
+    srcs = ["tests/backend_mimo_evidence_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "core_numerics_evidence_test",
+    size = "medium",
+    srcs = ["tests/core_numerics_evidence_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_public_evidence_test",
+    size = "medium",
+    srcs = ["tests/nr_public_evidence_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_downlink_strict_evidence_test",
+    size = "medium",
+    srcs = ["tests/nr_downlink_strict_evidence_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_pbch_external_oracle_test",
+    size = "medium",
+    srcs = ["tests/nr_pbch_external_oracle_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_wrapper_composition_oracle_test",
+    size = "medium",
+    srcs = ["tests/nr_wrapper_composition_oracle_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_pdsch_independent_oracle_test",
+    size = "medium",
+    srcs = ["tests/nr_pdsch_independent_oracle_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_uplink_strict_evidence_test",
+    size = "medium",
+    srcs = ["tests/nr_uplink_strict_evidence_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_public_evidence_test",
+    size = "medium",
+    srcs = ["tests/wifi_public_evidence_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_ldpc_matrix_oracle_test",
+    size = "medium",
+    srcs = ["tests/wifi_ldpc_matrix_oracle_test.mojo"],
+    data = [
+        "tests/fixtures/generate_wifi_ldpc_matrix_oracle.py",
+        "tests/fixtures/wifi_ldpc_matrix_oracle_v1.tsv",
+    ],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_wrapper_oracle_test",
+    size = "medium",
+    srcs = ["tests/wifi_wrapper_oracle_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_he_eht_acquisition_test",
+    size = "medium",
+    srcs = ["tests/wifi_he_eht_acquisition_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_rx_independent_oracle_test",
+    size = "medium",
+    srcs = ["tests/wifi_rx_independent_oracle_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "fft_variants_test",
+    size = "medium",
+    srcs = ["tests/fft_variants_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "modem_channel_test",
+    size = "small",
+    srcs = ["tests/modem_channel_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "channel_models_test",
+    size = "small",
+    srcs = ["tests/channel_models_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "standard_channel_test",
+    size = "medium",
+    srcs = ["tests/standard_channel_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "lte_channel_test",
+    size = "small",
+    srcs = ["tests/lte_channel_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "lte_coding_test",
+    size = "medium",
+    srcs = ["tests/lte_coding_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "lte_physical_test",
+    size = "medium",
+    srcs = ["tests/lte_physical_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "lte_rrm_test",
+    size = "medium",
+    srcs = ["tests/lte_rrm_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "lte_waveform_test",
+    size = "medium",
+    srcs = ["tests/lte_waveform_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_specification_test",
+    size = "medium",
+    srcs = ["tests/nr_specification_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_redcap_test",
+    size = "medium",
+    srcs = ["tests/nr_redcap_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_redcap_hd_fdd_test",
+    size = "medium",
+    srcs = ["tests/nr_redcap_hd_fdd_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_redcap_rrm_test",
+    size = "medium",
+    srcs = ["tests/nr_redcap_rrm_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_redcap_relaxation_test",
+    size = "medium",
+    srcs = ["tests/nr_redcap_relaxation_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_redcap_measurement_schedule_test",
+    size = "medium",
+    srcs = ["tests/nr_redcap_measurement_schedule_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_redcap_measurements_test",
+    size = "medium",
+    srcs = ["tests/nr_redcap_measurements_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_redcap_low_mobility_test",
+    size = "medium",
+    srcs = ["tests/nr_redcap_low_mobility_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_redcap_prach_placement_test",
+    size = "medium",
+    srcs = ["tests/nr_redcap_prach_placement_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_redcap_idle_access_test",
+    size = "medium",
+    srcs = ["tests/nr_redcap_idle_access_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_redcap_rrm_annex_test",
+    size = "medium",
+    srcs = ["tests/nr_redcap_rrm_annex_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_ntn_timing_test",
+    size = "medium",
+    srcs = ["tests/nr_ntn_timing_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_sidelink_rel17_test",
+    size = "medium",
+    srcs = ["tests/nr_sidelink_rel17_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_redcap_mac_test",
+    size = "medium",
+    srcs = ["tests/nr_redcap_mac_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_positioning_test",
+    size = "medium",
+    srcs = ["tests/nr_positioning_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_layer_mapping_test",
+    size = "medium",
+    srcs = ["tests/nr_layer_mapping_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_redcap_chain_test",
+    size = "medium",
+    srcs = ["tests/nr_redcap_chain_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_mac_algorithms_test",
+    size = "medium",
+    srcs = ["tests/wifi_mac_algorithms_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_mac_fragmentation_test",
+    size = "medium",
+    srcs = ["tests/wifi_mac_fragmentation_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_he_mac_test",
+    size = "medium",
+    srcs = ["tests/wifi_he_mac_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_sig_fields_test",
+    size = "medium",
+    srcs = ["tests/wifi_sig_fields_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_he_eht_sig_fields_test",
+    size = "medium",
+    srcs = ["tests/wifi_he_eht_sig_fields_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_he_eht_sig_waveform_test",
+    size = "medium",
+    srcs = ["tests/wifi_he_eht_sig_waveform_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_dsss_cck_test",
+    size = "medium",
+    srcs = ["tests/wifi_dsss_cck_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_dsss_plcp_test",
+    size = "medium",
+    srcs = ["tests/wifi_dsss_plcp_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_mac_state_test",
+    size = "medium",
+    srcs = ["tests/wifi_mac_state_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_ofdm_erp_test",
+    size = "medium",
+    srcs = ["tests/wifi_ofdm_erp_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_s1g_phy_test",
+    size = "medium",
+    srcs = ["tests/wifi_s1g_phy_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_ftm_ranging_test",
+    size = "medium",
+    srcs = ["tests/wifi_ftm_ranging_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "cdl_channel_test",
+    size = "medium",
+    srcs = ["tests/cdl_channel_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "phase2_differential_test",
+    size = "medium",
+    srcs = ["tests/phase2_differential_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "phase3_test",
+    size = "medium",
+    srcs = ["tests/phase3_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "ldpc_layered_test",
+    size = "medium",
+    srcs = ["tests/ldpc_layered_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "small_block_test",
+    size = "medium",
+    srcs = ["tests/small_block_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "polar_pc_test",
+    size = "medium",
+    srcs = ["tests/polar_pc_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "mimo_sizes_test",
+    size = "medium",
+    srcs = ["tests/mimo_sizes_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "mimo_oracle_test",
+    size = "medium",
+    srcs = ["tests/mimo_oracle_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_test",
+    size = "medium",
+    srcs = ["tests/wifi_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_profiles_test",
+    size = "medium",
+    srcs = ["tests/wifi_profiles_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_phy_chain_test",
+    size = "medium",
+    srcs = ["tests/wifi_phy_chain_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_acquisition_chain_test",
+    size = "medium",
+    srcs = ["tests/wifi_acquisition_chain_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_test",
+    size = "medium",
+    srcs = ["tests/nr_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_pdsch_test",
+    size = "medium",
+    srcs = ["tests/nr_pdsch_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_ldpc_test",
+    size = "medium",
+    srcs = ["tests/nr_ldpc_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_pdsch_chain_test",
+    size = "medium",
+    srcs = ["tests/nr_pdsch_chain_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_uplink_test",
+    size = "medium",
+    srcs = ["tests/nr_uplink_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_pucch_test",
+    size = "medium",
+    srcs = ["tests/nr_pucch_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_pucch_resources_test",
+    size = "medium",
+    srcs = ["tests/nr_pucch_resources_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_pucch_chain_test",
+    size = "medium",
+    srcs = ["tests/nr_pucch_chain_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_pbch_ptrs_test",
+    size = "medium",
+    srcs = ["tests/nr_pbch_ptrs_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_uci_test",
+    size = "medium",
+    srcs = ["tests/nr_uci_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_pusch_chain_test",
+    size = "medium",
+    srcs = ["tests/nr_pusch_chain_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_prach_complete_test",
+    size = "medium",
+    srcs = ["tests/nr_prach_complete_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_mcs_tbs_test",
+    size = "medium",
+    srcs = ["tests/nr_mcs_tbs_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "link_simulation_test",
+    size = "medium",
+    srcs = ["tests/link_simulation_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_link_simulation_test",
+    size = "medium",
+    srcs = ["tests/nr_link_simulation_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "monte_carlo_test",
+    size = "medium",
+    srcs = ["tests/monte_carlo_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_monte_carlo_test",
+    size = "medium",
+    srcs = ["tests/nr_monte_carlo_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_pdsch_monte_carlo_test",
+    size = "medium",
+    srcs = ["tests/nr_pdsch_monte_carlo_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_monte_carlo_test",
+    size = "medium",
+    srcs = ["tests/wifi_monte_carlo_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "testing_evidence_test",
+    size = "medium",
+    srcs = ["tests/testing_evidence_test.mojo"],
+    data = [
+        "tests/fixtures/generate_nr_pdsch_awgn_oracle.py",
+        "tests/fixtures/generate_wifi_legacy_bpsk_awgn_oracle.py",
+        "tests/fixtures/nr_pdsch_awgn_external_oracle_v1.tsv",
+        "tests/fixtures/wifi_legacy_bpsk_awgn_oracle_v1.tsv",
+    ],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "phase7_test",
+    size = "small",
+    srcs = ["tests/phase7_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "phase7_fixed_test",
+    size = "small",
+    srcs = ["tests/phase7_fixed_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "fixed_artifact_corpus_test",
+    size = "small",
+    srcs = ["tests/fixed_artifact_corpus_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "fixed_phy_test",
+    size = "small",
+    srcs = ["tests/fixed_phy_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "fixed_wifi_bcc_test",
+    size = "medium",
+    srcs = ["tests/fixed_wifi_bcc_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "fixed_wifi_phy_test",
+    size = "medium",
+    srcs = ["tests/fixed_wifi_phy_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "fixed_composition_oracle_test",
+    size = "medium",
+    srcs = ["tests/fixed_composition_oracle_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "fixed_wifi_legacy_test",
+    size = "medium",
+    srcs = ["tests/fixed_wifi_legacy_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "fixed_wifi_acquired_test",
+    size = "medium",
+    srcs = ["tests/fixed_wifi_acquired_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "fixed_nr_pdsch_test",
+    size = "medium",
+    srcs = ["tests/fixed_nr_pdsch_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "fixed_ldpc_test",
+    size = "medium",
+    srcs = ["tests/fixed_ldpc_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "fixed_sync_test",
+    size = "medium",
+    srcs = ["tests/fixed_sync_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "fixed_mimo_test",
+    size = "medium",
+    srcs = ["tests/fixed_mimo_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "core_bench",
+    srcs = ["benchmarks/core_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "cpu_practical_bench",
+    srcs = ["benchmarks/cpu_practical_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "cpu_mimo_f32_bench",
+    srcs = ["benchmarks/cpu_mimo_f32_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "cpu_phy_f32_bench",
+    srcs = ["benchmarks/cpu_phy_f32_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "phase2_bench",
+    srcs = ["benchmarks/phase2_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "phase7_fixed_bench",
+    srcs = ["benchmarks/phase7_fixed_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "fixed_artifact_corpus_bench",
+    srcs = ["benchmarks/fixed_artifact_corpus_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "fixed_artifact_corpus",
+    srcs = ["tools/fixed_artifact_corpus.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "fixed_phy_bench",
+    srcs = ["benchmarks/fixed_phy_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "fixed_wifi_bcc_bench",
+    srcs = ["benchmarks/fixed_wifi_bcc_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "fixed_wifi_phy_bench",
+    srcs = ["benchmarks/fixed_wifi_phy_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "fixed_wifi_legacy_bench",
+    srcs = ["benchmarks/fixed_wifi_legacy_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "fixed_wifi_acquired_bench",
+    srcs = ["benchmarks/fixed_wifi_acquired_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "fixed_nr_pdsch_bench",
+    srcs = ["benchmarks/fixed_nr_pdsch_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "fixed_ldpc_bench",
+    srcs = ["benchmarks/fixed_ldpc_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "fixed_sync_bench",
+    srcs = ["benchmarks/fixed_sync_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "fixed_mimo_bench",
+    srcs = ["benchmarks/fixed_mimo_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "phase3_6_bench",
+    srcs = ["benchmarks/phase3_6_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "testing_evidence_bench",
+    srcs = ["benchmarks/testing_evidence_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "monte_carlo_bench",
+    srcs = ["benchmarks/monte_carlo_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_monte_carlo_bench",
+    srcs = ["benchmarks/nr_monte_carlo_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_pdsch_monte_carlo_bench",
+    srcs = ["benchmarks/nr_pdsch_monte_carlo_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "wifi_monte_carlo_bench",
+    srcs = ["benchmarks/wifi_monte_carlo_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_mcs_tbs_bench",
+    srcs = ["benchmarks/nr_mcs_tbs_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "lte_coding_bench",
+    srcs = ["benchmarks/lte_coding_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "lte_channel_bench",
+    srcs = ["benchmarks/lte_channel_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "lte_physical_bench",
+    srcs = ["benchmarks/lte_physical_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "lte_rrm_bench",
+    srcs = ["benchmarks/lte_rrm_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "lte_waveform_bench",
+    srcs = ["benchmarks/lte_waveform_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_specification_bench",
+    srcs = ["benchmarks/nr_specification_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_redcap_bench",
+    srcs = ["benchmarks/nr_redcap_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_redcap_hd_fdd_bench",
+    srcs = ["benchmarks/nr_redcap_hd_fdd_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_redcap_rrm_bench",
+    srcs = ["benchmarks/nr_redcap_rrm_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_redcap_relaxation_bench",
+    srcs = ["benchmarks/nr_redcap_relaxation_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_redcap_measurement_schedule_bench",
+    srcs = ["benchmarks/nr_redcap_measurement_schedule_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_redcap_measurements_bench",
+    srcs = ["benchmarks/nr_redcap_measurements_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_redcap_low_mobility_bench",
+    srcs = ["benchmarks/nr_redcap_low_mobility_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_redcap_prach_placement_bench",
+    srcs = ["benchmarks/nr_redcap_prach_placement_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_redcap_idle_access_bench",
+    srcs = ["benchmarks/nr_redcap_idle_access_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_redcap_rrm_annex_bench",
+    srcs = ["benchmarks/nr_redcap_rrm_annex_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_ntn_timing_bench",
+    srcs = ["benchmarks/nr_ntn_timing_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_sidelink_rel17_bench",
+    srcs = ["benchmarks/nr_sidelink_rel17_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_redcap_mac_bench",
+    srcs = ["benchmarks/nr_redcap_mac_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_positioning_bench",
+    srcs = ["benchmarks/nr_positioning_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_layer_mapping_bench",
+    srcs = ["benchmarks/nr_layer_mapping_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_redcap_chain_bench",
+    srcs = ["benchmarks/nr_redcap_chain_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "wifi_mac_algorithms_bench",
+    srcs = ["benchmarks/wifi_mac_algorithms_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "wifi_mac_fragmentation_bench",
+    srcs = ["benchmarks/wifi_mac_fragmentation_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "wifi_he_mac_bench",
+    srcs = ["benchmarks/wifi_he_mac_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "wifi_sig_fields_bench",
+    srcs = ["benchmarks/wifi_sig_fields_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "wifi_he_eht_sig_fields_bench",
+    srcs = ["benchmarks/wifi_he_eht_sig_fields_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "wifi_he_eht_sig_waveform_bench",
+    srcs = ["benchmarks/wifi_he_eht_sig_waveform_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "wifi_dsss_cck_bench",
+    srcs = ["benchmarks/wifi_dsss_cck_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "wifi_dsss_plcp_bench",
+    srcs = ["benchmarks/wifi_dsss_plcp_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "wifi_mac_state_bench",
+    srcs = ["benchmarks/wifi_mac_state_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "wifi_ofdm_erp_bench",
+    srcs = ["benchmarks/wifi_ofdm_erp_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "wifi_s1g_phy_bench",
+    srcs = ["benchmarks/wifi_s1g_phy_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "wifi_ftm_ranging_bench",
+    srcs = ["benchmarks/wifi_ftm_ranging_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "kernel_gap_bench",
+    srcs = ["benchmarks/kernel_gap_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "dsp_channel_evidence_bench",
+    srcs = ["benchmarks/dsp_channel_evidence_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "fec_evidence_bench",
+    srcs = ["benchmarks/fec_evidence_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "backend_mimo_evidence_bench",
+    srcs = ["benchmarks/backend_mimo_evidence_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "core_numerics_evidence_bench",
+    srcs = ["benchmarks/core_numerics_evidence_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_public_evidence_bench",
+    srcs = ["benchmarks/nr_public_evidence_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "wifi_public_evidence_bench",
+    srcs = ["benchmarks/wifi_public_evidence_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "wifi_he_eht_acquisition_bench",
+    srcs = ["benchmarks/wifi_he_eht_acquisition_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "capabilities",
+    srcs = ["examples/capabilities.mojo"],
+    deps = ["@mojo//:std"],
+)
+
+mojo_binary(
+    name = "gpu_qpsk_demapper",
+    srcs = ["examples/gpu_qpsk_demapper.mojo"],
+    deps = [
+        "//max:layout",
+        "//max:max_mojo",
+        "@mojo//:std",
+    ],
+)
+
+mojo_binary(
+    name = "gpu_phase6_kernels",
+    srcs = ["examples/gpu_phase6_kernels.mojo"],
+    deps = [
+        "//max:layout",
+        "//max:max_mojo",
+        "@mojo//:std",
+    ],
+)
+
+mojo_binary(
+    name = "gpu_backend_validation",
+    srcs = ["examples/gpu_backend_validation.mojo"],
+    deps = [
+        ":wireless_dsp",
+        "//max:max_mojo",
+        "@mojo//:std",
+    ],
+)
+
+mojo_test(
+    name = "nr_mbs_rel17_test",
+    size = "medium",
+    srcs = ["tests/nr_mbs_rel17_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_mbs_rel17_bench",
+    srcs = ["benchmarks/nr_mbs_rel17_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_coverage_enhancement_rel17_test",
+    size = "medium",
+    srcs = ["tests/nr_coverage_enhancement_rel17_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_coverage_enhancement_rel17_bench",
+    srcs = ["benchmarks/nr_coverage_enhancement_rel17_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_eht_mlo_test",
+    size = "medium",
+    srcs = ["tests/wifi_eht_mlo_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "wifi_eht_mlo_bench",
+    srcs = ["benchmarks/wifi_eht_mlo_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_fr2_2_rel17_test",
+    size = "medium",
+    srcs = ["tests/nr_fr2_2_rel17_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_fr2_2_rel17_bench",
+    srcs = ["benchmarks/nr_fr2_2_rel17_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_u_rel16_test",
+    size = "medium",
+    srcs = ["tests/nr_u_rel16_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_u_rel16_bench",
+    srcs = ["benchmarks/nr_u_rel16_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_dmg_test",
+    size = "medium",
+    srcs = ["tests/wifi_dmg_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "wifi_dmg_bench",
+    srcs = ["benchmarks/wifi_dmg_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_redcap_rrm_conformance_test",
+    size = "medium",
+    srcs = ["tests/nr_redcap_rrm_conformance_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_redcap_rrm_conformance_bench",
+    srcs = ["benchmarks/nr_redcap_rrm_conformance_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_mimo_spatial_test",
+    size = "medium",
+    srcs = ["tests/wifi_mimo_spatial_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "wifi_mimo_spatial_bench",
+    srcs = ["benchmarks/wifi_mimo_spatial_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_eht_wideband_test",
+    size = "medium",
+    srcs = ["tests/wifi_eht_wideband_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "wifi_eht_wideband_bench",
+    srcs = ["benchmarks/wifi_eht_wideband_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_wur_test",
+    size = "medium",
+    srcs = ["tests/wifi_wur_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "wifi_wur_bench",
+    srcs = ["benchmarks/wifi_wur_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_tvht_test",
+    size = "medium",
+    srcs = ["tests/wifi_tvht_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "wifi_tvht_bench",
+    srcs = ["benchmarks/wifi_tvht_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_femimo_rel17_test",
+    size = "medium",
+    srcs = ["tests/nr_femimo_rel17_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_femimo_rel17_bench",
+    srcs = ["benchmarks/nr_femimo_rel17_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_randomized_mac_test",
+    size = "medium",
+    srcs = ["tests/wifi_randomized_mac_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "wifi_randomized_mac_bench",
+    srcs = ["benchmarks/wifi_randomized_mac_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_ntn_rel18_enh_test",
+    size = "medium",
+    srcs = ["tests/nr_ntn_rel18_enh_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_ntn_rel18_enh_bench",
+    srcs = ["benchmarks/nr_ntn_rel18_enh_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_edmg_test",
+    size = "medium",
+    srcs = ["tests/wifi_edmg_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "wifi_edmg_bench",
+    srcs = ["benchmarks/wifi_edmg_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "wifi_ebcs_test",
+    size = "medium",
+    srcs = ["tests/wifi_ebcs_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "wifi_ebcs_bench",
+    srcs = ["benchmarks/wifi_ebcs_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_sidelink_rel18_enh_test",
+    size = "medium",
+    srcs = ["tests/nr_sidelink_rel18_enh_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_sidelink_rel18_enh_bench",
+    srcs = ["benchmarks/nr_sidelink_rel18_enh_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "nr_pdcch_monitoring_test",
+    size = "medium",
+    srcs = ["tests/nr_pdcch_monitoring_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "nr_pdcch_monitoring_bench",
+    srcs = ["benchmarks/nr_pdcch_monitoring_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "bluetooth_le_packet_test",
+    size = "medium",
+    srcs = ["tests/bluetooth_le_packet_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "bluetooth_le_packet_bench",
+    srcs = ["benchmarks/bluetooth_le_packet_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "matter_tlv_integer_test",
+    size = "medium",
+    srcs = ["tests/matter_tlv_integer_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "matter_tlv_integer_bench",
+    srcs = ["benchmarks/matter_tlv_integer_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "zigbee_nwk_header_test",
+    size = "medium",
+    srcs = ["tests/zigbee_nwk_header_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "zigbee_nwk_header_bench",
+    srcs = ["benchmarks/zigbee_nwk_header_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "bluetooth_le_coded_test",
+    size = "medium",
+    srcs = ["tests/bluetooth_le_coded_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "bluetooth_le_coded_bench",
+    srcs = ["benchmarks/bluetooth_le_coded_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "bluetooth_le_coded_rx_test",
+    size = "medium",
+    srcs = ["tests/bluetooth_le_coded_rx_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "bluetooth_le_coded_rx_bench",
+    srcs = ["benchmarks/bluetooth_le_coded_rx_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "bluetooth_le_gfsk_limits_test",
+    size = "medium",
+    srcs = ["tests/bluetooth_le_gfsk_limits_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "bluetooth_le_gfsk_limits_bench",
+    srcs = ["benchmarks/bluetooth_le_gfsk_limits_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_test(
+    name = "bluetooth_br_edr_hec_test",
+    size = "medium",
+    srcs = ["tests/bluetooth_br_edr_hec_test.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
+
+mojo_binary(
+    name = "bluetooth_br_edr_hec_bench",
+    srcs = ["benchmarks/bluetooth_br_edr_hec_bench.mojo"],
+    deps = [":wireless_dsp", "@mojo//:std"],
+)
